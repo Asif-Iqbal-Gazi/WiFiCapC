@@ -19,9 +19,10 @@ struct chanhop;
 
 typedef void (*chanhop_on_tick_fn)(int channel, int freq_mhz, void *user);
 
-/* Create a hopper bound to iface i. The provided epoll_fd is used to register
- * the internal timerfd. Returns NULL on failure. */
-struct chanhop *chanhop_create(struct iface *i, int epoll_fd);
+/* Create a hopper bound to iface i. The provided ipc handle is remembered
+ * so the timerfd can be properly unregistered when the hopper is freed. */
+struct ipc;
+struct chanhop *chanhop_create(struct iface *i, struct ipc *ipc);
 void           chanhop_destroy(struct chanhop *h);
 
 /* Start hopping over the given channels at interval_ms per tick.

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "chanhop.h"
+#include "ipc.h"
 #include "log.h"
 
 #include <errno.h>
@@ -10,7 +11,7 @@
 
 struct chanhop {
 	struct iface       *iface;
-	int                 epoll_fd;     /* not owned; caller-managed */
+	struct ipc         *ipc;          /* not owned; for fd unregistration */
 	int                 timerfd;
 	int                 channels[CHANHOP_MAX_CHANNELS];
 	int                 n_channels;
@@ -22,13 +23,13 @@ struct chanhop {
 	void               *on_tick_user;
 };
 
-struct chanhop *chanhop_create(struct iface *i, int epoll_fd)
+struct chanhop *chanhop_create(struct iface *i, struct ipc *ipc)
 {
 	struct chanhop *h = calloc(1, sizeof *h);
 	if (!h) return NULL;
 
 	h->iface    = i;
-	h->epoll_fd = epoll_fd;
+	h->ipc      = ipc;
 	h->timerfd  = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (h->timerfd < 0) {
 		log_err("timerfd_create: %s", strerror(errno));
@@ -41,7 +42,12 @@ struct chanhop *chanhop_create(struct iface *i, int epoll_fd)
 void chanhop_destroy(struct chanhop *h)
 {
 	if (!h) return;
-	if (h->timerfd >= 0) close(h->timerfd);
+	if (h->timerfd >= 0) {
+		/* Unregister BEFORE close so the IPC layer can never call our
+		 * on_tick callback after our struct is freed. */
+		if (h->ipc) ipc_remove_fd(h->ipc, h->timerfd);
+		close(h->timerfd);
+	}
 	free(h);
 }
 

@@ -20,9 +20,18 @@ DEPS    := $(OBJS:.o=.d)
 
 BIN     := wificapc
 
-.PHONY: all clean install uninstall test
+.PHONY: all clean install uninstall test asan
 
 all: $(BIN)
+
+# Diagnostic build: address + UB sanitizers, no optimisation.
+# Re-runs the full link, so use after `make clean`.
+asan: CFLAGS  := -O0 -g -Wall -Wextra -Wpedantic -fno-common -D_GNU_SOURCE -std=c11 \
+                 -fsanitize=address,undefined -fno-omit-frame-pointer \
+                 -Wno-unused-parameter
+asan: LDLIBS := $(NL_LIBS) -fsanitize=address,undefined
+asan: $(BIN)
+	@echo "asan build ready: ./$(BIN)"
 
 $(BIN): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)

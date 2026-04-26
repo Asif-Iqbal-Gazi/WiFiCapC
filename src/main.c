@@ -46,6 +46,7 @@ struct app {
 static struct app  *g_app;
 
 /* forward decls — used by handle_recon_start before their definitions appear */
+static int ensure_table(struct app *a);
 static int ensure_handshake(struct app *a);
 
 /* ---- signals -------------------------------------------------------------- */
@@ -262,8 +263,7 @@ static int handle_iface_info(struct app *a, int fd, int64_t id)
 static int ensure_hopper(struct app *a)
 {
 	if (a->hopper) return 0;
-	int epoll_fd = -1; /* placeholder — not needed; ipc_add_fd uses its own */
-	a->hopper = chanhop_create(&a->iface, epoll_fd);
+	a->hopper = chanhop_create(&a->iface, a->ipc);
 	if (!a->hopper) return -1;
 	chanhop_set_on_tick(a->hopper, on_chanhop_tick, a);
 	if (ipc_add_fd(a->ipc, chanhop_fd(a->hopper),
@@ -669,6 +669,9 @@ static void on_handshake_event(enum hs_event evt,
 static int ensure_handshake(struct app *a)
 {
 	if (a->hs) return 0;
+	/* handshake module dereferences the table on every captured pair, so
+	 * the table MUST exist first — callers can invoke this in any order. */
+	if (ensure_table(a) < 0) return -1;
 	a->hs = handshake_create(a->table, DEFAULT_HS_DIR, DEFAULT_HS_STALE_SEC,
 	                         on_handshake_event, a);
 	return a->hs ? 0 : -1;
