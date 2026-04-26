@@ -1,0 +1,23 @@
+[Unit]
+Description=WiFiCapC — native 802.11 capture daemon
+Documentation=https://github.com/Asif-Iqbal-Gazi/WiFiCapC
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wificapc --socket /run/wificapc.sock --mode 0660
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+# capabilities will be expanded once raw socket / nl80211 work lands
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RuntimeDirectory=wificapc
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target
