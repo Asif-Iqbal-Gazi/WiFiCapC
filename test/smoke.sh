@@ -2,8 +2,15 @@
 # Round-trip the M1 commands against a freshly-launched daemon.
 set -euo pipefail
 
-BIN=${BIN:-./wificapc}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+BIN=${BIN:-$REPO_DIR/wificapc}
 SOCK=$(mktemp -u /tmp/wificapc.smoke.XXXXXX.sock)
+
+if [[ ! -x $BIN ]]; then
+	echo "binary not found at $BIN — run 'make' in $REPO_DIR first" >&2
+	exit 2
+fi
 
 cleanup() {
 	[[ -n ${PID:-} ]] && kill -TERM "$PID" 2>/dev/null || true

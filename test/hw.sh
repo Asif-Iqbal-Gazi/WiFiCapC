@@ -7,8 +7,15 @@
 set -euo pipefail
 
 IFACE=${IFACE:-wlx00c0cab79cb7}
-BIN=${BIN:-./wificapc}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+BIN=${BIN:-$REPO_DIR/wificapc}
 SOCK=$(mktemp -u /tmp/wificapc.hw.XXXXXX.sock)
+
+if [[ ! -x $BIN ]]; then
+	echo "binary not found at $BIN — run 'make' in $REPO_DIR first" >&2
+	exit 2
+fi
 
 if [[ $EUID -ne 0 ]]; then
 	echo "must run as root (sudo $0)" >&2
