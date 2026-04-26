@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "capture.h"
 #include "chanhop.h"
+#include "dot11.h"
 #include "iface.h"
 #include "ipc.h"
 #include "log.h"
 #include "proto.h"
+#include "table.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -18,13 +21,18 @@
 #include <unistd.h>
 
 #define DEFAULT_SOCK "/tmp/wificapc.sock"
-#define WIFICAPC_VER "0.2.0-dev"
+#define WIFICAPC_VER "0.3.0-dev"
+
+#define DEFAULT_AP_TTL_SEC  120
+#define DEFAULT_STA_TTL_SEC 300
 
 struct app {
 	struct ipc      *ipc;
 	struct iface     iface;
 	int              iface_open;
 	struct chanhop  *hopper;
+	struct table    *table;
+	struct capture  *capture;
 	time_t           started;
 };
 
@@ -323,6 +331,265 @@ static int handle_hop_stop(struct app *a, int fd, int64_t id)
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+/* ---- table emit hook → IPC events ---------------------------------------- */
+
+static int emit_ap_event(struct app *a, const char *tag, const struct ap_record *ap)
+{
+	char  buf[512];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	char   bssid[18];
+	dot11_mac_str(ap->bssid, bssid);
+
+	if ((r = proto_event_begin(buf, sizeof buf, pos, tag)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "bssid", bssid)) < 0) return -1;
+	pos = (size_t)r;
+	if (ap->ssid_len) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ssid", ap->ssid)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", ap->channel)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "rssi", ap->rssi)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_broadcast(a->ipc, buf, pos);
+}
+
+static int emit_sta_event(struct app *a, const char *tag, const struct sta_record *sta)
+{
+	char  buf[512];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	char   mac[18], ap[18];
+	dot11_mac_str(sta->mac, mac);
+
+	if ((r = proto_event_begin(buf, sizeof buf, pos, tag)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "mac", mac)) < 0) return -1;
+	pos = (size_t)r;
+	if (sta->have_ap) {
+		dot11_mac_str(sta->ap_bssid, ap);
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ap_bssid", ap)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", sta->channel)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "rssi", sta->rssi)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_broadcast(a->ipc, buf, pos);
+}
+
+static void on_table_event(enum table_event evt,
+                           const struct ap_record  *ap,
+                           const struct sta_record *sta,
+                           void *user)
+{
+	struct app *a = user;
+	switch (evt) {
+	case TABLE_EVT_AP_NEW:   emit_ap_event (a, "ap.new",   ap);  break;
+	case TABLE_EVT_AP_LOST:  emit_ap_event (a, "ap.lost",  ap);  break;
+	case TABLE_EVT_STA_NEW:  emit_sta_event(a, "sta.new",  sta); break;
+	case TABLE_EVT_STA_LOST: emit_sta_event(a, "sta.lost", sta); break;
+	}
+}
+
+/* ---- recon commands ------------------------------------------------------- */
+
+static int ensure_table(struct app *a)
+{
+	if (a->table) return 0;
+	a->table = table_create(DEFAULT_AP_TTL_SEC, DEFAULT_STA_TTL_SEC,
+	                        on_table_event, a);
+	return a->table ? 0 : -1;
+}
+
+static int handle_recon_start(struct app *a, int fd, int64_t id)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+	if (a->iface.mode != IFACE_MODE_MONITOR)
+		return reply_error(a->ipc, fd, id, "iface not in monitor mode");
+	if (ensure_table(a) < 0)
+		return reply_error(a->ipc, fd, id, "table init failed");
+
+	if (!a->capture) {
+		a->capture = capture_create(&a->iface, a->table, a->ipc);
+		if (!a->capture)
+			return reply_error(a->ipc, fd, id, "capture init failed");
+	}
+	if (capture_start(a->capture) < 0)
+		return reply_error(a->ipc, fd, id, "capture_start failed");
+
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_recon_stop(struct app *a, int fd, int64_t id)
+{
+	if (a->capture) capture_stop(a->capture);
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_clear(struct app *a, int fd, int64_t id)
+{
+	if (a->table) table_clear(a->table);
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+/*
+ * Reply layout:
+ *   {"id":N,"ok":true,"data":{"count":K,"items":[ {…}, {…}, … ],
+ *                              "truncated":true}}
+ *
+ * Each item is encoded into the same buffer. If an item would push us past
+ * the cap, we roll back to the previous good position, set truncated=true,
+ * and stop adding items.
+ */
+
+#define EMIT_OR_TRUNC(E) do { ssize_t _r = (E); \
+	if (_r < 0) { truncated = 1; pos = snap_pos; goto truncated_out; } \
+	pos = (size_t)_r; } while (0)
+
+static int handle_list_aps(struct app *a, int fd, int64_t id)
+{
+	if (!a->table)
+		return reply_error(a->ipc, fd, id, "no table (recon never started)");
+
+	struct ap_record snap[TABLE_MAX_APS];
+	int n = table_snapshot_aps(a->table, snap, TABLE_MAX_APS);
+
+	char    buf[16 * 1024];
+	size_t  pos       = 0;
+	int     first_top = 1;
+	int     truncated = 0;
+	size_t  snap_pos  = 0;
+	ssize_t r;
+
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first_top, "count", n)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_append(buf, sizeof buf, pos, ",\"items\":[")) < 0) return -1;
+	pos = (size_t)r;
+
+	for (int i = 0; i < n; i++) {
+		snap_pos = pos;
+		char bssid[18];
+		dot11_mac_str(snap[i].bssid, bssid);
+		int  first = 1;
+
+		if (i > 0) EMIT_OR_TRUNC(proto_append(buf, sizeof buf, pos, ","));
+		EMIT_OR_TRUNC(proto_append(buf, sizeof buf, pos, "{"));
+		EMIT_OR_TRUNC(proto_field_str (buf, sizeof buf, pos, &first, "bssid", bssid));
+		if (snap[i].ssid_len)
+			EMIT_OR_TRUNC(proto_field_str(buf, sizeof buf, pos, &first, "ssid", snap[i].ssid));
+		EMIT_OR_TRUNC(proto_field_int (buf, sizeof buf, pos, &first, "channel",    snap[i].channel));
+		EMIT_OR_TRUNC(proto_field_int (buf, sizeof buf, pos, &first, "rssi",       snap[i].rssi));
+		EMIT_OR_TRUNC(proto_field_int (buf, sizeof buf, pos, &first, "frames",     (int64_t)snap[i].frames));
+		EMIT_OR_TRUNC(proto_field_int (buf, sizeof buf, pos, &first, "first_seen", (int64_t)snap[i].first_seen));
+		EMIT_OR_TRUNC(proto_field_int (buf, sizeof buf, pos, &first, "last_seen",  (int64_t)snap[i].last_seen));
+		EMIT_OR_TRUNC(proto_append    (buf, sizeof buf, pos, "}"));
+	}
+truncated_out:
+	if ((r = proto_append(buf, sizeof buf, pos, "]")) < 0) return -1;
+	pos = (size_t)r;
+	if (truncated) {
+		if ((r = proto_field_bool(buf, sizeof buf, pos, &first_top, "truncated", 1)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
+static int handle_list_stas(struct app *a, int fd, int64_t id)
+{
+	if (!a->table)
+		return reply_error(a->ipc, fd, id, "no table (recon never started)");
+
+	struct sta_record snap[TABLE_MAX_STAS];
+	int n = table_snapshot_stas(a->table, snap, TABLE_MAX_STAS);
+
+	char    buf[64 * 1024];
+	size_t  pos       = 0;
+	int     first_top = 1;
+	int     truncated = 0;
+	size_t  snap_pos  = 0;
+	ssize_t r;
+
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first_top, "count", n)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_append(buf, sizeof buf, pos, ",\"items\":[")) < 0) return -1;
+	pos = (size_t)r;
+
+	for (int i = 0; i < n; i++) {
+		snap_pos = pos;
+		char mac[18], apb[18];
+		dot11_mac_str(snap[i].mac, mac);
+		int  first = 1;
+
+		if (i > 0) EMIT_OR_TRUNC(proto_append(buf, sizeof buf, pos, ","));
+		EMIT_OR_TRUNC(proto_append(buf, sizeof buf, pos, "{"));
+		EMIT_OR_TRUNC(proto_field_str(buf, sizeof buf, pos, &first, "mac", mac));
+		if (snap[i].have_ap) {
+			dot11_mac_str(snap[i].ap_bssid, apb);
+			EMIT_OR_TRUNC(proto_field_str(buf, sizeof buf, pos, &first, "ap_bssid", apb));
+		}
+		EMIT_OR_TRUNC(proto_field_int(buf, sizeof buf, pos, &first, "channel",    snap[i].channel));
+		EMIT_OR_TRUNC(proto_field_int(buf, sizeof buf, pos, &first, "rssi",       snap[i].rssi));
+		EMIT_OR_TRUNC(proto_field_int(buf, sizeof buf, pos, &first, "frames",     (int64_t)snap[i].frames));
+		EMIT_OR_TRUNC(proto_field_int(buf, sizeof buf, pos, &first, "first_seen", (int64_t)snap[i].first_seen));
+		EMIT_OR_TRUNC(proto_field_int(buf, sizeof buf, pos, &first, "last_seen",  (int64_t)snap[i].last_seen));
+		EMIT_OR_TRUNC(proto_append   (buf, sizeof buf, pos, "}"));
+	}
+truncated_out:
+	if ((r = proto_append(buf, sizeof buf, pos, "]")) < 0) return -1;
+	pos = (size_t)r;
+	if (truncated) {
+		if ((r = proto_field_bool(buf, sizeof buf, pos, &first_top, "truncated", 1)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
+static int handle_stats(struct app *a, int fd, int64_t id)
+{
+	char  buf[256];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "n_aps",
+	                         a->table ? table_n_aps(a->table) : 0)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "n_stas",
+	                         a->table ? table_n_stas(a->table) : 0)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "frames_total",
+	                         (int64_t)capture_frames_total(a->capture))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "frames_dropped",
+	                         (int64_t)capture_frames_dropped(a->capture))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "capturing",
+	                          capture_is_running(a->capture))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
 /* ---- top-level dispatch --------------------------------------------------- */
 
 static int on_line(int fd, char *line, size_t len, void *user)
@@ -348,6 +615,12 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "set_channel") == 0) return handle_set_channel(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "hop_start")   == 0) return handle_hop_start(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "hop_stop")    == 0) return handle_hop_stop(a, fd, req.id);
+	if (strcmp(req.cmd, "recon_start") == 0) return handle_recon_start(a, fd, req.id);
+	if (strcmp(req.cmd, "recon_stop")  == 0) return handle_recon_stop(a, fd, req.id);
+	if (strcmp(req.cmd, "list_aps")    == 0) return handle_list_aps(a, fd, req.id);
+	if (strcmp(req.cmd, "list_stas")   == 0) return handle_list_stas(a, fd, req.id);
+	if (strcmp(req.cmd, "stats")       == 0) return handle_stats(a, fd, req.id);
+	if (strcmp(req.cmd, "clear")       == 0) return handle_clear(a, fd, req.id);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }
@@ -434,7 +707,9 @@ int main(int argc, char **argv)
 	int run_rc = ipc_run(a.ipc);
 
 	log_info("shutting down");
-	if (a.hopper) chanhop_destroy(a.hopper);
+	if (a.capture) capture_destroy(a.capture);
+	if (a.hopper)  chanhop_destroy(a.hopper);
+	if (a.table)   table_destroy(a.table);
 	ipc_destroy(a.ipc);
 	g_app = NULL;
 	log_close();

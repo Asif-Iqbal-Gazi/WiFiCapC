@@ -41,6 +41,11 @@ static ssize_t append_str(char *buf, size_t cap, size_t pos, const char *s)
 	return append_raw(buf, cap, pos, s, strlen(s));
 }
 
+ssize_t proto_append(char *buf, size_t cap, size_t pos, const char *s)
+{
+	return append_raw(buf, cap, pos, s, strlen(s));
+}
+
 ssize_t proto_escape_string(char *buf, size_t cap, size_t pos, const char *s)
 {
 	if (pos + 1 + 1 > cap) return -1;

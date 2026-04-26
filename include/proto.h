@@ -72,6 +72,10 @@ ssize_t proto_field_bool(char *buf, size_t cap, size_t pos, int *first,
 /* Append a NUL-terminated raw byte string, escaping per JSON rules. */
 ssize_t proto_escape_string(char *buf, size_t cap, size_t pos, const char *s);
 
+/* Append a NUL-terminated literal verbatim (no escaping). Use only for tokens
+ * you know are well-formed JSON syntax (commas, brackets, etc.). */
+ssize_t proto_append(char *buf, size_t cap, size_t pos, const char *s);
+
 /* ---- argument extraction --------------------------------------------------
  * Helpers that operate on the raw JSON object string from
  * proto_request.args_raw. They scan a small, fixed-size token table on each

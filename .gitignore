@@ -3,6 +3,7 @@
 /build/
 /wificapc
 /wificapcctl
+/test_parsers
 *.pcapng
 *.22000
 *.swp
