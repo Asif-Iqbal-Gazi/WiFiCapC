@@ -1,0 +1,12 @@
+*.o
+*.d
+/build/
+/wificapc
+/wificapcctl
+*.pcapng
+*.22000
+*.swp
+*.bak
+/tags
+/.cache/
+/compile_commands.json
