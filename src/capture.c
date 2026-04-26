@@ -23,9 +23,10 @@
 #define EVICT_TICK_MS   2000        /* call table_evict_expired every 2s */
 
 struct capture {
-	struct iface  *iface;
-	struct table  *table;
-	struct ipc    *ipc;
+	struct iface     *iface;
+	struct table     *table;
+	struct handshake *hs;
+	struct ipc       *ipc;
 
 	int            sock_fd;
 	int            evict_fd;
@@ -36,12 +37,14 @@ struct capture {
 	uint64_t       frames_dropped;
 };
 
-struct capture *capture_create(struct iface *iface, struct table *table, struct ipc *ipc)
+struct capture *capture_create(struct iface *iface, struct table *table,
+                               struct handshake *hs, struct ipc *ipc)
 {
 	struct capture *c = calloc(1, sizeof *c);
 	if (!c) return NULL;
 	c->iface    = iface;
 	c->table    = table;
+	c->hs       = hs;
 	c->ipc      = ipc;
 	c->sock_fd  = -1;
 	c->evict_fd = -1;
@@ -78,6 +81,11 @@ static void process_frame(struct capture *c, size_t n)
 
 	switch (d.kind) {
 	case DOT11_FRAME_BEACON:
+		table_observe_ap   (c->table, &d, channel, rt.rssi_dbm, now);
+		/* cache the raw radiotap+802.11 frame so handshake module can
+		 * prepend it to the per-pair pcap when needed. */
+		table_cache_beacon (c->table, d.bssid, c->rx, n);
+		break;
 	case DOT11_FRAME_PROBE_RESP:
 		table_observe_ap(c->table, &d, channel, rt.rssi_dbm, now);
 		break;
@@ -88,6 +96,12 @@ static void process_frame(struct capture *c, size_t n)
 	case DOT11_FRAME_DATA:
 		/* SA is the STA, BSSID is its AP. */
 		table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, d.bssid);
+		/* Hand the data frame to the handshake collector — it filters
+		 * for EAPOL-Key internally and only acts on those. */
+		if (c->hs)
+			handshake_observe(c->hs, c->rx, n,
+			                  rt.payload, rt.payload_len,
+			                  &d, channel, rt.rssi_dbm);
 		break;
 	default:
 		/* control frames, IBSS, etc. — ignored for recon */
@@ -123,7 +137,9 @@ static void on_evict_tick(int fd, uint32_t events, void *user)
 	ssize_t  n = read(fd, &exp, sizeof exp);
 	(void)n;
 
-	table_evict_expired(c->table, time(NULL));
+	time_t now = time(NULL);
+	table_evict_expired(c->table, now);
+	if (c->hs) handshake_tick(c->hs, now);
 }
 
 int capture_start(struct capture *c)

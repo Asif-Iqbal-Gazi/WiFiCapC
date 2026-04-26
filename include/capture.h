@@ -2,6 +2,7 @@
 #ifndef WIFICAPC_CAPTURE_H
 #define WIFICAPC_CAPTURE_H
 
+#include "handshake.h"
 #include "iface.h"
 #include "table.h"
 
@@ -20,9 +21,10 @@
 struct capture;
 struct ipc;     /* forward decl from ipc.h */
 
-struct capture *capture_create(struct iface *iface,
-                               struct table *table,
-                               struct ipc   *ipc);
+struct capture *capture_create(struct iface     *iface,
+                               struct table     *table,
+                               struct handshake *hs,
+                               struct ipc       *ipc);
 
 void capture_destroy(struct capture *c);
 

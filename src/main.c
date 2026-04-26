@@ -2,9 +2,11 @@
 #include "capture.h"
 #include "chanhop.h"
 #include "dot11.h"
+#include "handshake.h"
 #include "iface.h"
 #include "ipc.h"
 #include "log.h"
+#include "proc.h"
 #include "proto.h"
 #include "table.h"
 
@@ -20,23 +22,31 @@
 #include <time.h>
 #include <unistd.h>
 
-#define DEFAULT_SOCK "/tmp/wificapc.sock"
-#define WIFICAPC_VER "0.3.0-dev"
+#define DEFAULT_SOCK     "/tmp/wificapc.sock"
+#define DEFAULT_HS_DIR   "/tmp/wificapc/handshakes"
+#define WIFICAPC_VER     "0.4.0-dev"
 
-#define DEFAULT_AP_TTL_SEC  120
-#define DEFAULT_STA_TTL_SEC 300
+#define DEFAULT_AP_TTL_SEC   120
+#define DEFAULT_STA_TTL_SEC  300
+#define DEFAULT_HS_STALE_SEC 30
 
 struct app {
-	struct ipc      *ipc;
-	struct iface     iface;
-	int              iface_open;
-	struct chanhop  *hopper;
-	struct table    *table;
-	struct capture  *capture;
-	time_t           started;
+	struct ipc        *ipc;
+	struct iface       iface;
+	int                iface_open;
+	struct chanhop    *hopper;
+	struct table      *table;
+	struct capture    *capture;
+	struct handshake  *hs;
+	struct proc       *proc;
+	int                wpasec_enabled;
+	time_t             started;
 };
 
 static struct app  *g_app;
+
+/* forward decls — used by handle_recon_start before their definitions appear */
+static int ensure_handshake(struct app *a);
 
 /* ---- signals -------------------------------------------------------------- */
 
@@ -418,9 +428,16 @@ static int handle_recon_start(struct app *a, int fd, int64_t id)
 		return reply_error(a->ipc, fd, id, "iface not in monitor mode");
 	if (ensure_table(a) < 0)
 		return reply_error(a->ipc, fd, id, "table init failed");
+	if (ensure_handshake(a) < 0)
+		return reply_error(a->ipc, fd, id, "handshake init failed");
+	if (!a->proc) {
+		a->proc = proc_create(a->ipc);
+		if (!a->proc)
+			return reply_error(a->ipc, fd, id, "proc init failed");
+	}
 
 	if (!a->capture) {
-		a->capture = capture_create(&a->iface, a->table, a->ipc);
+		a->capture = capture_create(&a->iface, a->table, a->hs, a->ipc);
 		if (!a->capture)
 			return reply_error(a->ipc, fd, id, "capture init failed");
 	}
@@ -562,6 +579,123 @@ truncated_out:
 	return ipc_send_to(a->ipc, fd, buf, pos);
 }
 
+/* ---- handshake / proc plumbing ------------------------------------------- */
+
+static int emit_hs_event(struct app *a, const char *tag,
+                         const struct hs_emit_payload *pl,
+                         const char *hash22000_path)
+{
+	char  buf[1024];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	char   ap[18], sta[18];
+	dot11_mac_str(pl->ap_bssid, ap);
+	dot11_mac_str(pl->sta_mac,  sta);
+
+	if ((r = proto_event_begin(buf, sizeof buf, pos, tag)) < 0) return -1;
+	pos = (size_t)r;
+	if (pl->pcap_path) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "file", pl->pcap_path)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if (hash22000_path) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "hash22000", hash22000_path)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ap_bssid", ap)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "sta_mac", sta)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", pl->channel)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "rssi", pl->rssi)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "msg_seen", pl->msg_seen_bitmap)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "pmkid", pl->have_pmkid)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+
+	return ipc_broadcast(a->ipc, buf, pos);
+}
+
+/* Called when hcxpcapngtool finishes converting a per-pair pcap. */
+static void on_hcxpcapngtool_done(const char *pcap_path,
+                                  const char *hash22000_path,
+                                  int exit_code, void *user)
+{
+	struct app *a = user;
+	if (exit_code != 0) {
+		log_warn("hcxpcapngtool(%s) exited %d", pcap_path ? pcap_path : "?", exit_code);
+		return;
+	}
+	if (!hash22000_path) return;
+
+	/* Re-emit handshake.captured so subscribers get the .22000 path now. */
+	char ap_zero[6] = {0};
+	struct hs_emit_payload pl = {
+		.pcap_path       = pcap_path,
+		.hash22000_path  = hash22000_path,
+	};
+	memcpy(pl.ap_bssid, ap_zero, 6);
+	memcpy(pl.sta_mac,  ap_zero, 6);
+	emit_hs_event(a, "handshake.hash22000", &pl, hash22000_path);
+	log_info("hcxpcapngtool produced %s", hash22000_path);
+
+	if (a->wpasec_enabled)
+		(void)proc_run_wpasec(a->proc, pcap_path, NULL, a);
+}
+
+/* Called by handshake.c on every state-machine transition we report. */
+static void on_handshake_event(enum hs_event evt,
+                               const struct hs_emit_payload *pl,
+                               void *user)
+{
+	struct app *a = user;
+	switch (evt) {
+	case HS_EVT_HANDSHAKE: emit_hs_event(a, "handshake.captured", pl, NULL); break;
+	case HS_EVT_PMKID:     emit_hs_event(a, "pmkid.captured",     pl, NULL); break;
+	case HS_EVT_DONE:
+		emit_hs_event(a, "handshake.done", pl, NULL);
+		if (pl->pcap_path && a->proc)
+			(void)proc_run_hcxpcapngtool(a->proc, pl->pcap_path,
+			                             on_hcxpcapngtool_done, a);
+		break;
+	}
+}
+
+static int ensure_handshake(struct app *a)
+{
+	if (a->hs) return 0;
+	a->hs = handshake_create(a->table, DEFAULT_HS_DIR, DEFAULT_HS_STALE_SEC,
+	                         on_handshake_event, a);
+	return a->hs ? 0 : -1;
+}
+
+static int handle_set_handshake_dir(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'path'");
+	char path[256];
+	if (proto_args_get_str(args, "path", path, sizeof path) < 0)
+		return reply_error(a->ipc, fd, id, "missing or oversize 'path'");
+	if (ensure_handshake(a) < 0)
+		return reply_error(a->ipc, fd, id, "handshake init failed");
+	if (handshake_set_dir(a->hs, path) < 0)
+		return reply_error(a->ipc, fd, id, "set_dir failed");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_set_wpasec(struct app *a, int fd, int64_t id, const char *args)
+{
+	int64_t en = 0;
+	if (args) (void)proto_args_get_int(args, "enabled", &en);
+	a->wpasec_enabled = en ? 1 : 0;
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 static int handle_stats(struct app *a, int fd, int64_t id)
 {
 	char  buf[256];
@@ -621,6 +755,8 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "list_stas")   == 0) return handle_list_stas(a, fd, req.id);
 	if (strcmp(req.cmd, "stats")       == 0) return handle_stats(a, fd, req.id);
 	if (strcmp(req.cmd, "clear")       == 0) return handle_clear(a, fd, req.id);
+	if (strcmp(req.cmd, "set_handshake_dir") == 0) return handle_set_handshake_dir(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "set_wpasec")  == 0) return handle_set_wpasec(a, fd, req.id, req.args_raw);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }
@@ -709,6 +845,8 @@ int main(int argc, char **argv)
 	log_info("shutting down");
 	if (a.capture) capture_destroy(a.capture);
 	if (a.hopper)  chanhop_destroy(a.hopper);
+	if (a.hs)      handshake_destroy(a.hs);
+	if (a.proc)    proc_destroy(a.proc);
 	if (a.table)   table_destroy(a.table);
 	ipc_destroy(a.ipc);
 	g_app = NULL;

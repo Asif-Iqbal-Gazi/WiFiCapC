@@ -19,9 +19,10 @@
  * Concurrency: single-threaded — only the main loop touches these.
  */
 
-#define TABLE_MAX_APS  256
-#define TABLE_MAX_STAS 1024
+#define TABLE_MAX_APS    256
+#define TABLE_MAX_STAS   1024
 #define TABLE_VENDOR_MAX 32
+#define TABLE_BEACON_MAX 512   /* most recent beacon, radiotap+802.11 */
 
 struct ap_record {
 	uint8_t  bssid[6];
@@ -34,6 +35,12 @@ struct ap_record {
 	time_t   last_seen;
 	uint64_t frames;
 	int      in_use;
+
+	/* most recent beacon as captured (radiotap header + 802.11 frame).
+	 * Used by the handshake module so each per-pair pcap starts with a
+	 * beacon — hcxpcapngtool needs the SSID + RSN IE to build the hash. */
+	uint8_t  last_beacon[TABLE_BEACON_MAX];
+	size_t   last_beacon_len;
 };
 
 struct sta_record {
@@ -77,6 +84,17 @@ void table_observe_ap (struct table *t, const struct dot11_info *d,
 void table_observe_sta(struct table *t, const struct dot11_info *d,
                        int channel, int rssi, time_t now,
                        const uint8_t *ap_bssid /* may be NULL */);
+
+/*
+ * Cache the most recent beacon raw bytes for a known BSSID. The beacon is
+ * stored as captured (radiotap + 802.11). Truncated to TABLE_BEACON_MAX.
+ * No-op if BSSID is unknown.
+ */
+void table_cache_beacon(struct table *t, const uint8_t bssid[6],
+                        const uint8_t *frame, size_t len);
+
+/* Look up by BSSID; returns NULL if not present. */
+const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6]);
 
 /* Scan tables and emit *_LOST for any record whose last_seen was longer ago
  * than the configured TTL. Call periodically. */

@@ -43,12 +43,16 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc.service
 
-test: $(BIN) test_parsers
+test: $(BIN) test_parsers test_eapol
 	@./test_parsers
+	@./test_eapol
 	@./test/smoke.sh
 
 test_parsers: test/test_parsers.c $(BUILD)/radiotap.o $(BUILD)/dot11.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
+test_eapol: test/test_eapol.c $(BUILD)/eapol.o $(BUILD)/dot11.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
 clean:
-	rm -rf $(BUILD) $(BIN) test_parsers
+	rm -rf $(BUILD) $(BIN) test_parsers test_eapol

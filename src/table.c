@@ -192,3 +192,20 @@ int table_snapshot_stas(const struct table *t, struct sta_record *out, int max)
 
 int table_n_aps (const struct table *t) { return t->n_aps;  }
 int table_n_stas(const struct table *t) { return t->n_stas; }
+
+void table_cache_beacon(struct table *t, const uint8_t bssid[6],
+                        const uint8_t *frame, size_t len)
+{
+	struct ap_record *ap = find_ap(t, bssid);
+	if (!ap) return;
+	if (len > TABLE_BEACON_MAX) len = TABLE_BEACON_MAX;
+	memcpy(ap->last_beacon, frame, len);
+	ap->last_beacon_len = len;
+}
+
+const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6])
+{
+	/* find_ap is non-const internally; this wrapper restores const-correctness
+	 * for read-only callers. */
+	return find_ap((struct table *)t, bssid);
+}

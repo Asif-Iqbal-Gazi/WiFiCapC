@@ -110,4 +110,19 @@ assert_match "$resp" '"n_aps":0'         "stats reports n_aps"
 assert_match "$resp" '"n_stas":0'        "stats reports n_stas"
 assert_match "$resp" '"capturing":false' "stats reports capturing=false"
 
+# M4 — handshake / wpasec command surface
+resp=$(run '{"id":30,"cmd":"set_handshake_dir","args":{"path":"/tmp/wificapc.smoke.hs"}}')
+assert_match "$resp" '"ok":true'         "set_handshake_dir → ok"
+
+resp=$(run '{"id":31,"cmd":"set_wpasec","args":{"enabled":1}}')
+assert_match "$resp" '"ok":true'         "set_wpasec on → ok"
+
+resp=$(run '{"id":32,"cmd":"set_wpasec","args":{"enabled":0}}')
+assert_match "$resp" '"ok":true'         "set_wpasec off → ok"
+
+resp=$(run '{"id":33,"cmd":"set_handshake_dir"}')
+assert_match "$resp" "missing 'path'"    "set_handshake_dir w/o args → error"
+
+rm -rf /tmp/wificapc.smoke.hs
+
 echo "all good"
