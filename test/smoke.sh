@@ -54,4 +54,32 @@ assert_match "$resp" 'unknown command'   "unknown cmd → error msg"
 resp=$(run 'not even json')
 assert_match "$resp" '"ok":false'        "garbage line → not ok"
 
+# M2 — no-root: command surface validation (these all return errors without
+# an iface, but the dispatcher must recognise them and not say "unknown").
+resp=$(run '{"id":10,"cmd":"iface_info"}')
+assert_match "$resp" 'no iface set'      "iface_info pre-set → error"
+
+resp=$(run '{"id":11,"cmd":"monitor_on"}')
+assert_match "$resp" 'no iface set'      "monitor_on pre-set → error"
+
+resp=$(run '{"id":12,"cmd":"set_channel","args":{"channel":6}}')
+assert_match "$resp" 'no iface set'      "set_channel pre-set → error"
+
+resp=$(run '{"id":13,"cmd":"hop_start","args":{"channels":[1,6,11],"interval_ms":250}}')
+assert_match "$resp" 'no iface set'      "hop_start pre-set → error"
+
+resp=$(run '{"id":14,"cmd":"hop_stop"}')
+assert_match "$resp" '"ok":true'         "hop_stop on no hopper → ok"
+
+resp=$(run '{"id":15,"cmd":"iface_set","args":{}}')
+assert_match "$resp" "missing or oversize" "iface_set without name → error"
+
+# nonexistent iface (short enough name that we get past the length check)
+resp=$(run '{"id":16,"cmd":"iface_set","args":{"name":"nothere0"}}')
+assert_match "$resp" 'iface_open failed' "iface_set on bogus iface → error"
+
+# obviously-oversize name
+resp=$(run '{"id":17,"cmd":"iface_set","args":{"name":"this_name_is_way_too_long_for_an_iface"}}')
+assert_match "$resp" 'too long'          "iface_set with oversize name → error"
+
 echo "all good"

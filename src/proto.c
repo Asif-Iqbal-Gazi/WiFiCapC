@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "proto.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -223,5 +224,103 @@ int proto_parse_request(char *line, size_t len,
 		*err = "missing cmd";
 		return -1;
 	}
+	return 0;
+}
+
+/* ---- args extraction ---------------------------------------------------- */
+
+/* Scan a JSON object string and return a token-table that locates the value
+ * for `key` at the top level. The caller passes in scratch storage for the
+ * tokens. Returns the index of the value token, or -1 if not found. */
+static int find_top_level_value(const char *json, jsmntok_t *toks, int max,
+                                const char *key, int *n_out)
+{
+	jsmn_parser p;
+	jsmn_init(&p);
+	int n = jsmn_parse(&p, json, strlen(json), toks, (unsigned)max);
+	if (n < 1 || toks[0].type != JSMN_OBJECT) return -1;
+	*n_out = n;
+
+	int klen = (int)strlen(key);
+	for (int i = 1; i < n; i++) {
+		if (toks[i].parent != 0) continue;
+		if (toks[i].type   != JSMN_STRING) continue;
+		int len = toks[i].end - toks[i].start;
+		if (len == klen && memcmp(json + toks[i].start, key, (size_t)klen) == 0) {
+			if (i + 1 >= n) return -1;
+			return i + 1;
+		}
+	}
+	return -1;
+}
+
+int proto_args_get_int(const char *args_raw, const char *key, int64_t *out)
+{
+	if (!args_raw) return -1;
+	jsmntok_t toks[32];
+	int total = 0;
+	int vi = find_top_level_value(args_raw, toks, 32, key, &total);
+	if (vi < 0 || toks[vi].type != JSMN_PRIMITIVE) return -1;
+
+	char buf[32];
+	int  len = toks[vi].end - toks[vi].start;
+	if (len <= 0 || (size_t)len >= sizeof buf) return -1;
+	memcpy(buf, args_raw + toks[vi].start, (size_t)len);
+	buf[len] = '\0';
+
+	if (buf[0] != '-' && (buf[0] < '0' || buf[0] > '9')) return -1;
+	char *end;
+	errno = 0;
+	long long v = strtoll(buf, &end, 10);
+	if (errno || *end != '\0') return -1;
+	*out = (int64_t)v;
+	return 0;
+}
+
+int proto_args_get_str(const char *args_raw, const char *key,
+                       char *out, size_t out_cap)
+{
+	if (!args_raw || out_cap == 0) return -1;
+	jsmntok_t toks[32];
+	int total = 0;
+	int vi = find_top_level_value(args_raw, toks, 32, key, &total);
+	if (vi < 0 || toks[vi].type != JSMN_STRING) return -1;
+
+	int len = toks[vi].end - toks[vi].start;
+	if (len < 0 || (size_t)len >= out_cap) return -1;
+	memcpy(out, args_raw + toks[vi].start, (size_t)len);
+	out[len] = '\0';
+	return 0;
+}
+
+int proto_args_get_int_array(const char *args_raw, const char *key,
+                             int *out, int max, int *n)
+{
+	if (!args_raw || !out || !n || max <= 0) return -1;
+	jsmntok_t toks[128];
+	int total = 0;
+	int vi = find_top_level_value(args_raw, toks, 128, key, &total);
+	if (vi < 0 || toks[vi].type != JSMN_ARRAY) return -1;
+
+	int parent = vi;
+	int wrote  = 0;
+
+	for (int i = vi + 1; i < total && wrote < max; i++) {
+		if (toks[i].parent != parent) continue;
+		if (toks[i].type   != JSMN_PRIMITIVE) return -1;
+
+		char buf[32];
+		int  len = toks[i].end - toks[i].start;
+		if (len <= 0 || (size_t)len >= sizeof buf) return -1;
+		memcpy(buf, args_raw + toks[i].start, (size_t)len);
+		buf[len] = '\0';
+
+		char *end;
+		errno = 0;
+		long v = strtol(buf, &end, 10);
+		if (errno || *end != '\0' || v < 0 || v > 65535) return -1;
+		out[wrote++] = (int)v;
+	}
+	*n = wrote;
 	return 0;
 }

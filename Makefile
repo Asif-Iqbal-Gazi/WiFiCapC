@@ -1,10 +1,15 @@
 CC      ?= cc
+PKG_CONFIG ?= pkg-config
+
+NL_CFLAGS := $(shell $(PKG_CONFIG) --cflags libnl-genl-3.0)
+NL_LIBS   := $(shell $(PKG_CONFIG) --libs   libnl-genl-3.0)
+
 CFLAGS  ?= -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes \
            -Wmissing-prototypes -Wno-unused-parameter -fno-common \
            -D_GNU_SOURCE -std=c11
-CPPFLAGS ?= -Iinclude
+CPPFLAGS ?= -Iinclude $(NL_CFLAGS)
 LDFLAGS ?=
-LDLIBS  ?=
+LDLIBS  ?= $(NL_LIBS)
 
 PREFIX  ?= /usr/local
 

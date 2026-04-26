@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #define MAX_CLIENTS    16
+#define MAX_EXTRA_FDS  8
 #define IN_BUF_CAP     8192
 #define OUT_BUF_CAP    65536
 #define EPOLL_BACKLOG  32
@@ -29,15 +30,40 @@ struct client {
 	int      want_write;
 };
 
+struct extra_fd {
+	int           fd;
+	ipc_on_fd_fn  cb;
+	void         *user;
+};
+
 struct ipc {
 	int              listen_fd;
 	int              epoll_fd;
 	int              stop;
 	struct client    clients[MAX_CLIENTS];
+	struct extra_fd  extras[MAX_EXTRA_FDS];
 	ipc_on_line_fn   on_line;
 	void            *on_line_user;
 	char             sock_path[108];
 };
+
+static struct extra_fd *extra_find(struct ipc *s, int fd)
+{
+	for (size_t i = 0; i < MAX_EXTRA_FDS; i++) {
+		if (s->extras[i].fd == fd)
+			return &s->extras[i];
+	}
+	return NULL;
+}
+
+static struct extra_fd *extra_alloc(struct ipc *s)
+{
+	for (size_t i = 0; i < MAX_EXTRA_FDS; i++) {
+		if (s->extras[i].fd < 0)
+			return &s->extras[i];
+	}
+	return NULL;
+}
 
 static struct client *client_alloc(struct ipc *s)
 {
@@ -239,6 +265,8 @@ struct ipc *ipc_create(const char *sock_path, mode_t mode)
 	s->epoll_fd  = -1;
 	for (size_t i = 0; i < MAX_CLIENTS; i++)
 		s->clients[i].fd = -1;
+	for (size_t i = 0; i < MAX_EXTRA_FDS; i++)
+		s->extras[i].fd = -1;
 
 	if (strlen(sock_path) >= sizeof s->sock_path) {
 		log_err("socket path too long");
@@ -325,10 +353,16 @@ int ipc_run(struct ipc *s)
 		}
 		for (int i = 0; i < n; i++) {
 			int fd = evs[i].data.fd;
-			if (fd == s->listen_fd)
+			if (fd == s->listen_fd) {
 				on_listen_readable(s);
-			else
-				on_client_event(s, fd, evs[i].events);
+				continue;
+			}
+			struct extra_fd *e = extra_find(s, fd);
+			if (e) {
+				e->cb(fd, evs[i].events, e->user);
+				continue;
+			}
+			on_client_event(s, fd, evs[i].events);
 		}
 	}
 	return 0;
@@ -355,4 +389,39 @@ int ipc_broadcast(struct ipc *s, const char *line, size_t len)
 		}
 	}
 	return sent;
+}
+
+int ipc_add_fd(struct ipc *s, int fd, uint32_t events,
+               ipc_on_fd_fn cb, void *user)
+{
+	if (fd < 0 || !cb) return -1;
+	if (extra_find(s, fd)) {
+		log_warn("ipc_add_fd: fd=%d already registered", fd);
+		return -1;
+	}
+	struct extra_fd *e = extra_alloc(s);
+	if (!e) {
+		log_err("ipc_add_fd: extras table full");
+		return -1;
+	}
+	struct epoll_event ev = { .events = events, .data.fd = fd };
+	if (epoll_ctl(s->epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+		log_err("epoll_ctl add fd=%d: %s", fd, strerror(errno));
+		return -1;
+	}
+	e->fd   = fd;
+	e->cb   = cb;
+	e->user = user;
+	return 0;
+}
+
+int ipc_remove_fd(struct ipc *s, int fd)
+{
+	struct extra_fd *e = extra_find(s, fd);
+	if (!e) return -1;
+	epoll_ctl(s->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+	e->fd   = -1;
+	e->cb   = NULL;
+	e->user = NULL;
+	return 0;
 }

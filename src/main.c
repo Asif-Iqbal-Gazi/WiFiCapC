@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "chanhop.h"
+#include "iface.h"
 #include "ipc.h"
 #include "log.h"
 #include "proto.h"
@@ -6,30 +8,35 @@
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #define DEFAULT_SOCK "/tmp/wificapc.sock"
-#define WIFICAPC_VER "0.1.0-dev"
+#define WIFICAPC_VER "0.2.0-dev"
 
-static struct ipc *g_ipc;
-
-struct opts {
-	const char *sock_path;
-	mode_t      sock_mode;
-	int         foreground;
-	int         debug;
+struct app {
+	struct ipc      *ipc;
+	struct iface     iface;
+	int              iface_open;
+	struct chanhop  *hopper;
+	time_t           started;
 };
+
+static struct app  *g_app;
+
+/* ---- signals -------------------------------------------------------------- */
 
 static void on_signal(int signo)
 {
 	(void)signo;
-	if (g_ipc)
-		ipc_stop(g_ipc);
+	if (g_app && g_app->ipc)
+		ipc_stop(g_app->ipc);
 }
 
 static void install_signals(void)
@@ -42,7 +49,88 @@ static void install_signals(void)
 	signal(SIGPIPE, SIG_IGN);
 }
 
-static int handle_ping(int fd, int64_t id)
+/* ---- emit helpers --------------------------------------------------------- */
+
+static int emit_event_iface_channel(struct app *a, int channel, int freq)
+{
+	char  buf[256];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+
+	if ((r = proto_event_begin(buf, sizeof buf, pos, "iface.channel")) < 0)
+		return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "iface", a->iface.name)) < 0)
+		return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", channel)) < 0)
+		return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "freq", freq)) < 0)
+		return -1;
+	pos = (size_t)r;
+	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+
+	return ipc_broadcast(a->ipc, buf, pos);
+}
+
+static int emit_event_iface_mode(struct app *a, enum iface_mode mode)
+{
+	char  buf[256];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+
+	if ((r = proto_event_begin(buf, sizeof buf, pos, "iface.mode")) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "iface", a->iface.name)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "mode", iface_mode_name(mode))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+
+	return ipc_broadcast(a->ipc, buf, pos);
+}
+
+static int reply_ok_empty(struct ipc *s, int fd, int64_t id)
+{
+	char  buf[64];
+	ssize_t r = proto_reply_ok_begin(buf, sizeof buf, 0, id);
+	if (r < 0) return -1;
+	r = proto_reply_end(buf, sizeof buf, (size_t)r);
+	if (r < 0) return -1;
+	return ipc_send_to(s, fd, buf, (size_t)r);
+}
+
+static int reply_error(struct ipc *s, int fd, int64_t id, const char *err)
+{
+	char  buf[256];
+	ssize_t r = proto_reply_err(buf, sizeof buf, 0, id, err);
+	if (r < 0) return -1;
+	return ipc_send_to(s, fd, buf, (size_t)r);
+}
+
+/* ---- on_tick: chanhop fires this on every successful channel set ---------- */
+
+static void on_chanhop_tick(int channel, int freq, void *user)
+{
+	emit_event_iface_channel(user, channel, freq);
+}
+
+/* ---- timerfd glue: dispatch chanhop's fd into chanhop_on_timer ------------ */
+
+static void on_chanhop_fd(int fd, uint32_t events, void *user)
+{
+	(void)fd; (void)events;
+	chanhop_on_timer(user);
+}
+
+/* ---- command handlers ----------------------------------------------------- */
+
+static int handle_ping(struct app *a, int fd, int64_t id)
 {
 	char  buf[256];
 	size_t pos = 0;
@@ -56,10 +144,10 @@ static int handle_ping(int fd, int64_t id)
 	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 
-	return ipc_send_to(g_ipc, fd, buf, pos);
+	return ipc_send_to(a->ipc, fd, buf, pos);
 }
 
-static int handle_version(int fd, int64_t id)
+static int handle_version(struct app *a, int fd, int64_t id)
 {
 	char  buf[256];
 	size_t pos = 0;
@@ -68,24 +156,23 @@ static int handle_version(int fd, int64_t id)
 
 	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
 	pos = (size_t)r;
-	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "name",    "wificapc")) < 0) return -1;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "name", "wificapc")) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "version", WIFICAPC_VER)) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 
-	return ipc_send_to(g_ipc, fd, buf, pos);
+	return ipc_send_to(a->ipc, fd, buf, pos);
 }
 
-static int handle_uptime(int fd, int64_t id, time_t started)
+static int handle_uptime(struct app *a, int fd, int64_t id)
 {
 	char  buf[256];
 	size_t pos = 0;
 	int    first = 1;
 	ssize_t r;
-
-	int64_t up = (int64_t)(time(NULL) - started);
+	int64_t up = (int64_t)(time(NULL) - a->started);
 
 	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
 	pos = (size_t)r;
@@ -94,39 +181,185 @@ static int handle_uptime(int fd, int64_t id, time_t started)
 	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 
-	return ipc_send_to(g_ipc, fd, buf, pos);
+	return ipc_send_to(a->ipc, fd, buf, pos);
 }
 
-static int reply_error(int fd, int64_t id, const char *err)
+static int handle_iface_set(struct app *a, int fd, int64_t id, const char *args)
 {
-	char  buf[256];
-	ssize_t r = proto_reply_err(buf, sizeof buf, 0, id, err);
-	if (r < 0) return -1;
-	return ipc_send_to(g_ipc, fd, buf, (size_t)r);
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'name'");
+
+	/* large scratch so we can distinguish 'missing' from 'too long' below */
+	char name[64];
+	if (proto_args_get_str(args, "name", name, sizeof name) < 0)
+		return reply_error(a->ipc, fd, id, "missing or oversize 'name'");
+	if (strlen(name) >= sizeof a->iface.name)
+		return reply_error(a->ipc, fd, id, "iface name too long");
+
+	/* Stop the hopper before we re-target. */
+	if (a->hopper) {
+		chanhop_destroy(a->hopper);
+		a->hopper = NULL;
+	}
+
+	if (iface_open(&a->iface, name) < 0)
+		return reply_error(a->ipc, fd, id, "iface_open failed");
+
+	a->iface_open = 1;
+	return reply_ok_empty(a->ipc, fd, id);
 }
+
+static int handle_iface_info(struct app *a, int fd, int64_t id)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+
+	char  buf[512];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "iface", a->iface.name)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "ifindex", a->iface.ifindex)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "wiphy", a->iface.wiphy)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "mode", iface_mode_name(a->iface.mode))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", a->iface.channel)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "freq", a->iface.freq_mhz)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "hopping", chanhop_is_running(a->hopper))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
+static int ensure_hopper(struct app *a)
+{
+	if (a->hopper) return 0;
+	int epoll_fd = -1; /* placeholder — not needed; ipc_add_fd uses its own */
+	a->hopper = chanhop_create(&a->iface, epoll_fd);
+	if (!a->hopper) return -1;
+	chanhop_set_on_tick(a->hopper, on_chanhop_tick, a);
+	if (ipc_add_fd(a->ipc, chanhop_fd(a->hopper),
+	               EPOLLIN, on_chanhop_fd, a->hopper) < 0) {
+		chanhop_destroy(a->hopper);
+		a->hopper = NULL;
+		return -1;
+	}
+	return 0;
+}
+
+static int handle_monitor_on(struct app *a, int fd, int64_t id)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+	if (iface_set_mode(&a->iface, IFACE_MODE_MONITOR) < 0)
+		return reply_error(a->ipc, fd, id, "iface_set_mode failed");
+	emit_event_iface_mode(a, IFACE_MODE_MONITOR);
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_monitor_off(struct app *a, int fd, int64_t id)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+	if (a->hopper && chanhop_is_running(a->hopper))
+		chanhop_stop(a->hopper);
+	if (iface_set_mode(&a->iface, IFACE_MODE_MANAGED) < 0)
+		return reply_error(a->ipc, fd, id, "iface_set_mode failed");
+	emit_event_iface_mode(a, IFACE_MODE_MANAGED);
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_set_channel(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+	int64_t ch;
+	if (!args || proto_args_get_int(args, "channel", &ch) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'channel'");
+	if (ensure_hopper(a) < 0)
+		return reply_error(a->ipc, fd, id, "hopper init failed");
+	if (chanhop_pin(a->hopper, (int)ch) < 0)
+		return reply_error(a->ipc, fd, id, "set_channel failed");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_hop_start(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+
+	int     channels[CHANHOP_MAX_CHANNELS];
+	int     n = 0;
+	int64_t interval = 250;
+
+	if (!args || proto_args_get_int_array(args, "channels", channels,
+	                                      CHANHOP_MAX_CHANNELS, &n) < 0 || n == 0)
+		return reply_error(a->ipc, fd, id, "missing 'channels' (non-empty array)");
+	(void)proto_args_get_int(args, "interval_ms", &interval);
+	if (interval < 50 || interval > 10000)
+		return reply_error(a->ipc, fd, id, "interval_ms out of range (50..10000)");
+
+	if (ensure_hopper(a) < 0)
+		return reply_error(a->ipc, fd, id, "hopper init failed");
+	if (chanhop_start(a->hopper, channels, n, (int)interval) < 0)
+		return reply_error(a->ipc, fd, id, "hop_start failed");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_hop_stop(struct app *a, int fd, int64_t id)
+{
+	if (a->hopper)
+		chanhop_stop(a->hopper);
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+/* ---- top-level dispatch --------------------------------------------------- */
 
 static int on_line(int fd, char *line, size_t len, void *user)
 {
-	time_t              *started = user;
-	struct proto_request req;
-	const char          *err = NULL;
+	struct app *a = user;
 
+	struct proto_request req;
+	const char *err = NULL;
 	if (proto_parse_request(line, len, &req, &err) < 0) {
 		log_warn("client fd=%d parse error: %s", fd, err);
-		return reply_error(fd, -1, err ? err : "parse error");
+		return reply_error(a->ipc, fd, -1, err ? err : "parse error");
 	}
 
 	log_debug("client fd=%d cmd='%s' id=%lld", fd, req.cmd, (long long)req.id);
 
-	if (strcmp(req.cmd, "ping") == 0)
-		return handle_ping(fd, req.id);
-	if (strcmp(req.cmd, "version") == 0)
-		return handle_version(fd, req.id);
-	if (strcmp(req.cmd, "uptime") == 0)
-		return handle_uptime(fd, req.id, *started);
+	if (strcmp(req.cmd, "ping")        == 0) return handle_ping(a, fd, req.id);
+	if (strcmp(req.cmd, "version")     == 0) return handle_version(a, fd, req.id);
+	if (strcmp(req.cmd, "uptime")      == 0) return handle_uptime(a, fd, req.id);
+	if (strcmp(req.cmd, "iface_set")   == 0) return handle_iface_set(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "iface_info")  == 0) return handle_iface_info(a, fd, req.id);
+	if (strcmp(req.cmd, "monitor_on")  == 0) return handle_monitor_on(a, fd, req.id);
+	if (strcmp(req.cmd, "monitor_off") == 0) return handle_monitor_off(a, fd, req.id);
+	if (strcmp(req.cmd, "set_channel") == 0) return handle_set_channel(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "hop_start")   == 0) return handle_hop_start(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "hop_stop")    == 0) return handle_hop_stop(a, fd, req.id);
 
-	return reply_error(fd, req.id, "unknown command");
+	return reply_error(a->ipc, fd, req.id, "unknown command");
 }
+
+/* ---- options & boot ------------------------------------------------------- */
+
+struct opts {
+	const char *sock_path;
+	mode_t      sock_mode;
+	int         foreground;
+	int         debug;
+};
 
 static void usage(FILE *f, const char *argv0)
 {
@@ -174,7 +407,7 @@ int main(int argc, char **argv)
 	struct opts o = {
 		.sock_path  = DEFAULT_SOCK,
 		.sock_mode  = 0660,
-		.foreground = 1,    /* M1: foreground only */
+		.foreground = 1,
 		.debug      = 0,
 	};
 
@@ -187,20 +420,23 @@ int main(int argc, char **argv)
 
 	install_signals();
 
-	g_ipc = ipc_create(o.sock_path, o.sock_mode);
-	if (!g_ipc) {
+	struct app a = {0};
+	a.started = time(NULL);
+
+	a.ipc = ipc_create(o.sock_path, o.sock_mode);
+	if (!a.ipc) {
 		log_err("failed to start ipc");
 		return 1;
 	}
+	g_app = &a;
+	ipc_set_on_line(a.ipc, on_line, &a);
 
-	time_t started = time(NULL);
-	ipc_set_on_line(g_ipc, on_line, &started);
-
-	int run_rc = ipc_run(g_ipc);
+	int run_rc = ipc_run(a.ipc);
 
 	log_info("shutting down");
-	ipc_destroy(g_ipc);
-	g_ipc = NULL;
+	if (a.hopper) chanhop_destroy(a.hopper);
+	ipc_destroy(a.ipc);
+	g_app = NULL;
 	log_close();
 	return run_rc < 0 ? 1 : 0;
 }

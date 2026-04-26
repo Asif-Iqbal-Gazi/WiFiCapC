@@ -3,6 +3,7 @@
 #define WIFICAPC_IPC_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 /*
@@ -42,5 +43,18 @@ int  ipc_send_to(struct ipc *s, int client_fd,
 
 /* Send a line to every connected client. */
 int  ipc_broadcast(struct ipc *s, const char *line, size_t len);
+
+/*
+ * Register an arbitrary fd into the server's epoll loop. Used by the channel
+ * hopper (timerfd) and, later, by the AF_PACKET capture socket.
+ *
+ * The callback fires whenever epoll reports `events` on the fd. Up to 8
+ * extra fds may be registered.
+ */
+typedef void (*ipc_on_fd_fn)(int fd, uint32_t events, void *user);
+
+int ipc_add_fd   (struct ipc *s, int fd, uint32_t events,
+                  ipc_on_fd_fn cb, void *user);
+int ipc_remove_fd(struct ipc *s, int fd);
 
 #endif

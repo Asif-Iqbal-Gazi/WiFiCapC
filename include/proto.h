@@ -72,4 +72,25 @@ ssize_t proto_field_bool(char *buf, size_t cap, size_t pos, int *first,
 /* Append a NUL-terminated raw byte string, escaping per JSON rules. */
 ssize_t proto_escape_string(char *buf, size_t cap, size_t pos, const char *s);
 
+/* ---- argument extraction --------------------------------------------------
+ * Helpers that operate on the raw JSON object string from
+ * proto_request.args_raw. They scan a small, fixed-size token table on each
+ * call — fine for command handlers that are not on a hot path.
+ *
+ * All helpers are read-only: args_raw is *not* mutated.
+ *
+ * Return 0 on success, -1 on missing field / type mismatch.
+ */
+
+int proto_args_get_int (const char *args_raw, const char *key, int64_t *out);
+
+/* Copies the unescaped string into out (NUL-terminated). out_cap includes
+ * the NUL. Truncation returns -1. */
+int proto_args_get_str (const char *args_raw, const char *key,
+                        char *out, size_t out_cap);
+
+/* Reads up to max ints from a JSON array; *n receives count read. */
+int proto_args_get_int_array(const char *args_raw, const char *key,
+                             int *out, int max, int *n);
+
 #endif
