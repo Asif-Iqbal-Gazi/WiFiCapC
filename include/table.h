@@ -41,6 +41,9 @@ struct ap_record {
 	 * beacon — hcxpcapngtool needs the SSID + RSN IE to build the hash. */
 	uint8_t  last_beacon[TABLE_BEACON_MAX];
 	size_t   last_beacon_len;
+
+	int      handshake_captured;
+	time_t   last_attack_time;
 };
 
 struct sta_record {
@@ -54,6 +57,7 @@ struct sta_record {
 	time_t   last_seen;
 	uint64_t frames;
 	int      in_use;
+	time_t   last_attack_time;
 };
 
 enum table_event {
@@ -95,6 +99,13 @@ void table_cache_beacon(struct table *t, const uint8_t bssid[6],
 
 /* Look up by BSSID; returns NULL if not present. */
 const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6]);
+
+/* Mark handshake as captured so we don't spam it. */
+void table_mark_handshake(struct table *t, const uint8_t bssid[6]);
+
+/* Mark target as attacked to enforce cooldowns. */
+void table_mark_ap_attacked(struct table *t, const uint8_t bssid[6]);
+void table_mark_sta_attacked(struct table *t, const uint8_t mac[6]);
 
 /* Scan tables and emit *_LOST for any record whose last_seen was longer ago
  * than the configured TTL. Call periodically. */

@@ -456,7 +456,7 @@ static int handle_recon_start(struct app *a, int fd, int64_t id)
 		return reply_error(a->ipc, fd, id, "capture_start failed");
 
 	if (ensure_inject(a) == 0 && !a->aa) {
-		a->aa = autoattack_create(a->table, a->inject, a->ipc);
+		a->aa = autoattack_create(a->table, a->inject, a->ipc, &a->iface);
 		if (a->aa) {
 			ipc_add_fd(a->ipc, autoattack_fd(a->aa), EPOLLIN, on_autoattack_fd, a->aa);
 			autoattack_start(a->aa, 5000);
@@ -695,8 +695,14 @@ static void on_handshake_event(enum hs_event evt,
 {
 	struct app *a = user;
 	switch (evt) {
-	case HS_EVT_HANDSHAKE: emit_hs_event(a, "handshake.captured", pl, NULL); break;
-	case HS_EVT_PMKID:     emit_hs_event(a, "pmkid.captured",     pl, NULL); break;
+	case HS_EVT_HANDSHAKE: 
+		emit_hs_event(a, "handshake.captured", pl, NULL); 
+		table_mark_handshake(a->table, pl->ap_bssid);
+		break;
+	case HS_EVT_PMKID:     
+		emit_hs_event(a, "pmkid.captured",     pl, NULL); 
+		table_mark_handshake(a->table, pl->ap_bssid);
+		break;
 	case HS_EVT_DONE:
 		emit_hs_event(a, "handshake.done", pl, NULL);
 		if (pl->pcap_path && a->proc)

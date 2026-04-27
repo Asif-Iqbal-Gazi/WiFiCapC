@@ -215,3 +215,21 @@ const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid
 	 * for read-only callers. */
 	return find_ap((struct table *)t, bssid);
 }
+
+void table_mark_handshake(struct table *t, const uint8_t bssid[6])
+{
+	struct ap_record *ap = find_ap(t, bssid);
+	if (ap) ap->handshake_captured = 1;
+}
+
+void table_mark_ap_attacked(struct table *t, const uint8_t bssid[6])
+{
+	struct ap_record *ap = find_ap(t, bssid);
+	if (ap) ap->last_attack_time = time(NULL);
+}
+
+void table_mark_sta_attacked(struct table *t, const uint8_t mac[6])
+{
+	struct sta_record *sta = find_sta(t, mac);
+	if (sta) sta->last_attack_time = time(NULL);
+}

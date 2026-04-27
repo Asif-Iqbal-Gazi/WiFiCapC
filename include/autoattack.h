@@ -8,7 +8,7 @@
 
 struct autoattack;
 
-struct autoattack *autoattack_create(struct table *t, struct inject *inj, struct ipc *ipc);
+struct autoattack *autoattack_create(struct table *t, struct inject *inj, struct ipc *ipc, const struct iface *iface);
 void autoattack_destroy(struct autoattack *aa);
 
 /* Returns the timer fd for epoll registration */
