@@ -24,11 +24,14 @@ send("iface_set", {"name": "wlx00c0cab79cb7"})
 time.sleep(1)
 send("monitor_on")
 time.sleep(1)
+# Start hopping channels to find APs/STAs
+send("hop_start", {"channels": [1, 6, 11]})
+time.sleep(1)
 send("recon_start")
 
-print("Waiting for events (15 seconds)...")
+print("Waiting for events (20 seconds)...")
 print("You should see AP/STA discovery and auto-attacks (inject.assoc/inject.deauth)")
-for _ in range(15):
+for _ in range(20):
     time.sleep(1)
     try:
         data = s.recv(4096)
@@ -48,4 +51,5 @@ try:
 except:
     pass
 
+send("hop_stop")
 send("recon_stop")

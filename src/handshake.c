@@ -61,10 +61,31 @@ static struct hs_pair *alloc_pair(struct handshake *h)
 
 static int ensure_dir(const char *path)
 {
-	if (mkdir(path, 0700) == 0) return 0;
-	if (errno == EEXIST)        return 0;
-	log_err("mkdir(%s): %s", path, strerror(errno));
-	return -1;
+	char tmp[256];
+	char *p = NULL;
+	size_t len;
+
+	snprintf(tmp, sizeof(tmp), "%s", path);
+	len = strlen(tmp);
+	if (len == 0) return 0;
+	if (tmp[len - 1] == '/')
+		tmp[len - 1] = 0;
+		
+	for (p = tmp + 1; *p; p++) {
+		if (*p == '/') {
+			*p = 0;
+			if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+				log_err("mkdir(%s): %s", tmp, strerror(errno));
+				return -1;
+			}
+			*p = '/';
+		}
+	}
+	if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+		log_err("mkdir(%s): %s", tmp, strerror(errno));
+		return -1;
+	}
+	return 0;
 }
 
 static void mac_hex(const uint8_t m[6], char out[13])
