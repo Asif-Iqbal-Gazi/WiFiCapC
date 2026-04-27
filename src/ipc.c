@@ -177,6 +177,8 @@ static void client_consume_lines(struct ipc *s, struct client *c)
 		if (s->on_line)
 			s->on_line(c->fd, c->in, line_len, s->on_line_user);
 
+		if (c->fd < 0) break;
+
 		size_t consumed = line_len + 1;
 		size_t leftover = c->in_len - consumed;
 		memmove(c->in, c->in + consumed, leftover);
