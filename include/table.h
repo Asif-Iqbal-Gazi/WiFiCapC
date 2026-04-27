@@ -103,6 +103,9 @@ void table_evict_expired(struct table *t, time_t now);
 /* Wipe everything (no events emitted). */
 void table_clear(struct table *t);
 
+/* Update eviction timeouts at runtime. Pass <=0 to keep the current value. */
+void table_set_ttls(struct table *t, int ap_ttl_sec, int sta_ttl_sec);
+
 /* Snapshot iteration. Returns count of entries copied (capped at max).
  * Records are returned in arbitrary order; in_use flag is always 1. */
 int table_snapshot_aps (const struct table *t, struct ap_record  *out, int max);

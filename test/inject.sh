@@ -19,8 +19,8 @@
 set -euo pipefail
 
 IFACE=${IFACE:-wlx00c0cab79cb7}
-BSSID=${BSSID:?BSSID env var required (your test AP's MAC)}
-CHANNEL=${CHANNEL:?CHANNEL env var required}
+BSSID=${BSSID:?BSSID env var required: the MAC of your test AP}
+CHANNEL=${CHANNEL:?CHANNEL env var required: the channel of your test AP}
 WAIT_SECS=${WAIT_SECS:-30}
 DEAUTH_COUNT=${DEAUTH_COUNT:-16}
 

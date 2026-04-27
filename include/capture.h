@@ -42,6 +42,11 @@ int  capture_is_running(const struct capture *c);
 uint64_t capture_frames_total(const struct capture *c);
 uint64_t capture_frames_dropped(const struct capture *c);
 
+/* Drop AP/STA *recon* updates whose RSSI is below this dBm threshold.
+ * Handshake / EAPOL frames are NOT filtered — we never want to miss those.
+ * Pass 127 (RT_RSSI_ABSENT) to disable filtering (default). */
+void capture_set_min_rssi(struct capture *c, int min_rssi);
+
 /* Expose the AF_PACKET socket for TX (frame injection). Returns -1 if not
  * started. The caller MUST NOT close the fd. */
 int capture_sock_fd(const struct capture *c);

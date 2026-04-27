@@ -31,6 +31,7 @@ struct capture {
 	int            sock_fd;
 	int            evict_fd;
 	int            running;
+	int            min_rssi;        /* 127 = no filter */
 
 	uint8_t        rx[RX_BUF_SIZE];
 	uint64_t       frames_total;
@@ -48,6 +49,7 @@ struct capture *capture_create(struct iface *iface, struct table *table,
 	c->ipc      = ipc;
 	c->sock_fd  = -1;
 	c->evict_fd = -1;
+	c->min_rssi = 127;          /* no filter */
 	return c;
 }
 
@@ -79,23 +81,31 @@ static void process_frame(struct capture *c, size_t n)
 	                             : c->iface->channel;
 	time_t now     = time(NULL);
 
+	/* RSSI filter: only suppresses *recon* updates so the table doesn't
+	 * fill with distant noise. Handshake routing below is unaffected. */
+	int recon_ok = (rt.rssi_dbm == 127) || (rt.rssi_dbm >= c->min_rssi);
+
 	switch (d.kind) {
 	case DOT11_FRAME_BEACON:
-		table_observe_ap   (c->table, &d, channel, rt.rssi_dbm, now);
+		if (recon_ok)
+			table_observe_ap   (c->table, &d, channel, rt.rssi_dbm, now);
 		/* cache the raw radiotap+802.11 frame so handshake module can
-		 * prepend it to the per-pair pcap when needed. */
+		 * prepend it to the per-pair pcap when needed. Beacon caching
+		 * is unconditional — handshake completion needs the SSID even
+		 * for distant APs that recon would otherwise filter out. */
 		table_cache_beacon (c->table, d.bssid, c->rx, n);
 		break;
 	case DOT11_FRAME_PROBE_RESP:
-		table_observe_ap(c->table, &d, channel, rt.rssi_dbm, now);
+		if (recon_ok)
+			table_observe_ap(c->table, &d, channel, rt.rssi_dbm, now);
 		break;
 	case DOT11_FRAME_PROBE_REQ:
-		/* SA is the probing STA; no associated AP. */
-		table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, NULL);
+		if (recon_ok)
+			table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, NULL);
 		break;
 	case DOT11_FRAME_DATA:
-		/* SA is the STA, BSSID is its AP. */
-		table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, d.bssid);
+		if (recon_ok)
+			table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, d.bssid);
 		/* Hand the data frame to the handshake collector — it filters
 		 * for EAPOL-Key internally and only acts on those. */
 		if (c->hs)
@@ -245,3 +255,9 @@ int      capture_is_running   (const struct capture *c) { return c && c->running
 uint64_t capture_frames_total (const struct capture *c) { return c ? c->frames_total   : 0; }
 uint64_t capture_frames_dropped(const struct capture *c){ return c ? c->frames_dropped : 0; }
 int      capture_sock_fd      (const struct capture *c) { return c ? c->sock_fd        : -1; }
+
+void capture_set_min_rssi(struct capture *c, int min_rssi)
+{
+	if (!c) return;
+	c->min_rssi = min_rssi;
+}

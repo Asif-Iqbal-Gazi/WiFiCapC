@@ -174,6 +174,12 @@ void table_clear(struct table *t)
 	t->n_stas = 0;
 }
 
+void table_set_ttls(struct table *t, int ap_ttl_sec, int sta_ttl_sec)
+{
+	if (ap_ttl_sec  > 0) t->ap_ttl  = ap_ttl_sec;
+	if (sta_ttl_sec > 0) t->sta_ttl = sta_ttl_sec;
+}
+
 int table_snapshot_aps(const struct table *t, struct ap_record *out, int max)
 {
 	int n = 0;

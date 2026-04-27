@@ -716,6 +716,27 @@ static int handle_set_wpasec(struct app *a, int fd, int64_t id, const char *args
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+/* ---- runtime tuning ------------------------------------------------------ */
+
+static int handle_set_ttls(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing args");
+	int64_t ap_ttl = 0, sta_ttl = 0, min_rssi = 127;
+	(void)proto_args_get_int(args, "ap_ttl",   &ap_ttl);
+	(void)proto_args_get_int(args, "sta_ttl",  &sta_ttl);
+	(void)proto_args_get_int(args, "min_rssi", &min_rssi);
+
+	if (ensure_table(a) < 0)
+		return reply_error(a->ipc, fd, id, "table init failed");
+	table_set_ttls(a->table, (int)ap_ttl, (int)sta_ttl);
+
+	if (a->capture && min_rssi != 127)
+		capture_set_min_rssi(a->capture, (int)min_rssi);
+
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 /* ---- frame injection (deauth / assoc) ------------------------------------ */
 
 static int ensure_inject(struct app *a)
@@ -874,6 +895,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "set_wpasec")  == 0) return handle_set_wpasec(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "deauth")      == 0) return handle_deauth(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "assoc")       == 0) return handle_assoc(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }

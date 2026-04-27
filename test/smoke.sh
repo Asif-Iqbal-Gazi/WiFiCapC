@@ -144,4 +144,11 @@ assert_match "$resp" 'sta is not a MAC'  "deauth with bad sta → error"
 resp=$(run '{"id":45,"cmd":"deauth","args":{"bssid":"aa:bb:cc:dd:ee:ff","count":99999}}')
 assert_match "$resp" '1..256'            "deauth with huge count → error"
 
+# M6 — set_ttls
+resp=$(run '{"id":50,"cmd":"set_ttls","args":{"ap_ttl":120,"sta_ttl":300,"min_rssi":-200}}')
+assert_match "$resp" '"ok":true'         "set_ttls accepts pwnagotchi defaults"
+
+resp=$(run '{"id":51,"cmd":"set_ttls"}')
+assert_match "$resp" 'missing args'      "set_ttls without args → error"
+
 echo "all good"
