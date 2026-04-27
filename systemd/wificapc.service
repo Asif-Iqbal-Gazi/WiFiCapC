@@ -5,7 +5,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/wificapc --socket /run/wificapc.sock --mode 0660
+ExecStart=/usr/local/bin/wificapc \
+    --socket /run/wificapc.sock --mode 0660 \
+    --iface wlan0 \
+    --hs-dir /etc/pwnagotchi/handshakes \
+    --attack
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
@@ -33,6 +37,9 @@ SystemCallArchitectures=native
 
 RuntimeDirectory=wificapc
 RuntimeDirectoryMode=0750
+
+# Handshake .22000 output directory (must be pre-created by the image build).
+ReadWritePaths=/etc/pwnagotchi/handshakes /run
 
 [Install]
 WantedBy=multi-user.target

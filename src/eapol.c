@@ -111,6 +111,9 @@ int eapol_parse(const uint8_t *frame, size_t len,
 	p    += 8;
 	left -= 8;
 
+	/* Record position of EAPOL version byte for .22000 assembly */
+	size_t eapol_off = (size_t)(p - frame);
+
 	/* EAPOL header: ver(1) type(1) length(BE u16) */
 	if (left < 4) return 0;
 	uint8_t  type   = p[1];
@@ -125,6 +128,9 @@ int eapol_parse(const uint8_t *frame, size_t len,
 	out->descriptor_type = p[0];
 	out->key_information = be16(p + 1);
 
+	out->eapol_frame_off = eapol_off;
+	out->eapol_frame_len = 4 + (size_t)plen;
+
 	/* IEEE 802.11i Key Descriptor body offsets (within the EAPOL body):
 	 *   0 desc_type     1 .. 2 key_info     3 .. 4 key_length
 	 *   5 .. 12 replay_counter    13 .. 44 nonce
@@ -136,10 +142,15 @@ int eapol_parse(const uint8_t *frame, size_t len,
 	const uint8_t *kd     = p + 95;
 	if (95 + kd_len > plen) kd_len = (uint16_t)(plen - 95);
 
-	/* Nonces: ANonce (M1/M3) or SNonce (M2) — we don't disambiguate here,
-	 * the consumer can match by msg + ACK direction. */
+	/* Nonces: ANonce (M1/M3) or SNonce (M2) — disambiguated by msg + direction. */
 	out->has_nonce = 1;
 	memcpy(out->nonce, nonce, 32);
+
+	/* MIC: bytes 77-92 of the key descriptor; zero in M1. */
+	if (out->key_information & EAPOL_KI_MIC) {
+		memcpy(out->mic, p + 77, 16);
+		out->has_mic = 1;
+	}
 
 	out->msg = classify(out->key_information, kd_len);
 

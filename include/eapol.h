@@ -62,7 +62,11 @@ struct eapol_info {
 	int            has_pmkid;
 	uint8_t        pmkid[16];
 	int            has_nonce;
-	uint8_t        nonce[32];
+	uint8_t        nonce[32];      /* ANonce (M1/M3) or SNonce (M2) */
+	int            has_mic;
+	uint8_t        mic[16];        /* key_mic field; 0 on M1 */
+	size_t         eapol_frame_off; /* offset in frame[] of EAPOL version byte */
+	size_t         eapol_frame_len; /* 4 + plen (total EAPOL packet bytes) */
 };
 
 /*
