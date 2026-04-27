@@ -198,8 +198,21 @@ int iface_open(struct iface *i, const char *name)
 
 	i->wiphy = ctx.wiphy;
 	i->mode  = ctx.mode;
-	log_info("iface %s: ifindex=%d wiphy=%u mode=%s",
-	         name, i->ifindex, i->wiphy, iface_mode_name(i->mode));
+
+	/* Snapshot the hardware MAC via SIOCGIFHWADDR — needed for active
+	 * association attacks where we use our own MAC as source address. */
+	int sk = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (sk >= 0) {
+		struct ifreq ifr = {0};
+		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
+		if (ioctl(sk, SIOCGIFHWADDR, &ifr) == 0)
+			memcpy(i->mac, ifr.ifr_hwaddr.sa_data, 6);
+		close(sk);
+	}
+
+	log_info("iface %s: ifindex=%d wiphy=%u mode=%s mac=%02x:%02x:%02x:%02x:%02x:%02x",
+	         name, i->ifindex, i->wiphy, iface_mode_name(i->mode),
+	         i->mac[0], i->mac[1], i->mac[2], i->mac[3], i->mac[4], i->mac[5]);
 	return 0;
 }
 

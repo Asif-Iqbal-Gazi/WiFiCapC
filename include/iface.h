@@ -23,6 +23,7 @@ struct iface {
 	enum iface_mode mode;       /* last observed mode */
 	int             channel;    /* last set channel (0 = unknown) */
 	int             freq_mhz;   /* last set frequency */
+	uint8_t         mac[6];     /* hardware MAC */
 };
 
 /* Look up name → ifindex/wiphy and snapshot current mode. Returns 0 on success.

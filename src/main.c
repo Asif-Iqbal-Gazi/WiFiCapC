@@ -4,6 +4,7 @@
 #include "dot11.h"
 #include "handshake.h"
 #include "iface.h"
+#include "inject.h"
 #include "ipc.h"
 #include "log.h"
 #include "proc.h"
@@ -24,7 +25,7 @@
 
 #define DEFAULT_SOCK     "/tmp/wificapc.sock"
 #define DEFAULT_HS_DIR   "/tmp/wificapc/handshakes"
-#define WIFICAPC_VER     "0.4.0-dev"
+#define WIFICAPC_VER     "0.5.0-dev"
 
 #define DEFAULT_AP_TTL_SEC   120
 #define DEFAULT_STA_TTL_SEC  300
@@ -39,6 +40,7 @@ struct app {
 	struct capture    *capture;
 	struct handshake  *hs;
 	struct proc       *proc;
+	struct inject     *inject;
 	int                wpasec_enabled;
 	time_t             started;
 };
@@ -579,6 +581,21 @@ truncated_out:
 	return ipc_send_to(a->ipc, fd, buf, pos);
 }
 
+/* Parse "aa:bb:cc:dd:ee:ff" into 6 bytes. Returns 0 on success. */
+static int parse_mac(const char *s, uint8_t out[6])
+{
+	if (!s) return -1;
+	unsigned v[6];
+	if (sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x",
+	           &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
+		return -1;
+	for (int i = 0; i < 6; i++) {
+		if (v[i] > 0xff) return -1;
+		out[i] = (uint8_t)v[i];
+	}
+	return 0;
+}
+
 /* ---- handshake / proc plumbing ------------------------------------------- */
 
 static int emit_hs_event(struct app *a, const char *tag,
@@ -699,6 +716,101 @@ static int handle_set_wpasec(struct app *a, int fd, int64_t id, const char *args
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+/* ---- frame injection (deauth / assoc) ------------------------------------ */
+
+static int ensure_inject(struct app *a)
+{
+	if (a->inject) return 0;
+	if (!a->capture || !capture_is_running(a->capture))
+		return -1;
+	int sock_fd = capture_sock_fd(a->capture);
+	if (sock_fd < 0) return -1;
+	a->inject = inject_create(sock_fd, &a->iface);
+	return a->inject ? 0 : -1;
+}
+
+static int handle_deauth(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'bssid'");
+
+	char     bssid_s[32];
+	if (proto_args_get_str(args, "bssid", bssid_s, sizeof bssid_s) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'bssid'");
+
+	uint8_t  bssid[6];
+	if (parse_mac(bssid_s, bssid) < 0)
+		return reply_error(a->ipc, fd, id, "bssid is not a MAC");
+
+	uint8_t  sta[6];
+	int      have_sta = 0;
+	char     sta_s[32];
+	if (proto_args_get_str(args, "sta", sta_s, sizeof sta_s) == 0) {
+		if (parse_mac(sta_s, sta) < 0)
+			return reply_error(a->ipc, fd, id, "sta is not a MAC");
+		have_sta = 1;
+	}
+
+	int64_t count_64 = 5;
+	(void)proto_args_get_int(args, "count", &count_64);
+	if (count_64 < 1 || count_64 > 256)
+		return reply_error(a->ipc, fd, id, "count must be 1..256");
+
+	int64_t reason_64 = 7;
+	(void)proto_args_get_int(args, "reason", &reason_64);
+
+	if (ensure_inject(a) < 0)
+		return reply_error(a->ipc, fd, id, "inject requires recon_start first");
+
+	int sent = inject_deauth(a->inject, bssid, have_sta ? sta : NULL,
+	                         (int)count_64, (int)reason_64);
+
+	char  buf[128];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "sent", sent)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
+static int handle_assoc(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'bssid'");
+
+	char    bssid_s[32];
+	if (proto_args_get_str(args, "bssid", bssid_s, sizeof bssid_s) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'bssid'");
+
+	uint8_t bssid[6];
+	if (parse_mac(bssid_s, bssid) < 0)
+		return reply_error(a->ipc, fd, id, "bssid is not a MAC");
+
+	if (ensure_inject(a) < 0)
+		return reply_error(a->ipc, fd, id, "inject requires recon_start first");
+
+	/* If we know the BSSID, look up its SSID from the recon table; otherwise
+	 * fall through with a wildcard. */
+	const char *ssid     = NULL;
+	uint8_t     ssid_len = 0;
+	if (a->table) {
+		const struct ap_record *ap = table_find_ap(a->table, bssid);
+		if (ap && ap->ssid_len > 0) {
+			ssid     = ap->ssid;
+			ssid_len = ap->ssid_len;
+		}
+	}
+
+	if (inject_assoc(a->inject, bssid, ssid, ssid_len) < 0)
+		return reply_error(a->ipc, fd, id, "assoc send failed");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 static int handle_stats(struct app *a, int fd, int64_t id)
 {
 	char  buf[256];
@@ -760,6 +872,8 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "clear")       == 0) return handle_clear(a, fd, req.id);
 	if (strcmp(req.cmd, "set_handshake_dir") == 0) return handle_set_handshake_dir(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_wpasec")  == 0) return handle_set_wpasec(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "deauth")      == 0) return handle_deauth(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "assoc")       == 0) return handle_assoc(a, fd, req.id, req.args_raw);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }
@@ -846,6 +960,9 @@ int main(int argc, char **argv)
 	int run_rc = ipc_run(a.ipc);
 
 	log_info("shutting down");
+	/* inject is a thin wrapper around capture's socket — destroy it BEFORE
+	 * capture closes the fd. */
+	if (a.inject)  inject_destroy(a.inject);
 	if (a.capture) capture_destroy(a.capture);
 	if (a.hopper)  chanhop_destroy(a.hopper);
 	if (a.hs)      handshake_destroy(a.hs);

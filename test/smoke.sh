@@ -125,4 +125,23 @@ assert_match "$resp" "missing 'path'"    "set_handshake_dir w/o args → error"
 
 rm -rf /tmp/wificapc.smoke.hs
 
+# M5 — injection command surface (no-root)
+resp=$(run '{"id":40,"cmd":"deauth"}')
+assert_match "$resp" "missing 'bssid'"   "deauth without args → error"
+
+resp=$(run '{"id":41,"cmd":"deauth","args":{"bssid":"not-a-mac"}}')
+assert_match "$resp" 'not a MAC'         "deauth with bad bssid → error"
+
+resp=$(run '{"id":42,"cmd":"deauth","args":{"bssid":"aa:bb:cc:dd:ee:ff"}}')
+assert_match "$resp" 'requires recon_start' "deauth without recon → error"
+
+resp=$(run '{"id":43,"cmd":"assoc","args":{"bssid":"aa:bb:cc:dd:ee:ff"}}')
+assert_match "$resp" 'requires recon_start' "assoc without recon → error"
+
+resp=$(run '{"id":44,"cmd":"deauth","args":{"bssid":"aa:bb:cc:dd:ee:ff","sta":"junk"}}')
+assert_match "$resp" 'sta is not a MAC'  "deauth with bad sta → error"
+
+resp=$(run '{"id":45,"cmd":"deauth","args":{"bssid":"aa:bb:cc:dd:ee:ff","count":99999}}')
+assert_match "$resp" '1..256'            "deauth with huge count → error"
+
 echo "all good"

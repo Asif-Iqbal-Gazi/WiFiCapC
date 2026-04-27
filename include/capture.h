@@ -42,4 +42,8 @@ int  capture_is_running(const struct capture *c);
 uint64_t capture_frames_total(const struct capture *c);
 uint64_t capture_frames_dropped(const struct capture *c);
 
+/* Expose the AF_PACKET socket for TX (frame injection). Returns -1 if not
+ * started. The caller MUST NOT close the fd. */
+int capture_sock_fd(const struct capture *c);
+
 #endif

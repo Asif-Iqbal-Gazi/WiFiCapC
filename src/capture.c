@@ -244,3 +244,4 @@ int capture_stop(struct capture *c)
 int      capture_is_running   (const struct capture *c) { return c && c->running; }
 uint64_t capture_frames_total (const struct capture *c) { return c ? c->frames_total   : 0; }
 uint64_t capture_frames_dropped(const struct capture *c){ return c ? c->frames_dropped : 0; }
+int      capture_sock_fd      (const struct capture *c) { return c ? c->sock_fd        : -1; }
