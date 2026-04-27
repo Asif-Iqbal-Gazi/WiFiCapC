@@ -10,6 +10,7 @@
 #include "proc.h"
 #include "proto.h"
 #include "table.h"
+#include "autoattack.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -41,6 +42,7 @@ struct app {
 	struct handshake  *hs;
 	struct proc       *proc;
 	struct inject     *inject;
+	struct autoattack *aa;
 	int                wpasec_enabled;
 	time_t             started;
 };
@@ -50,6 +52,7 @@ static struct app  *g_app;
 /* forward decls — used by handle_recon_start before their definitions appear */
 static int ensure_table(struct app *a);
 static int ensure_handshake(struct app *a);
+static int ensure_inject(struct app *a);
 
 /* ---- signals -------------------------------------------------------------- */
 
@@ -147,6 +150,12 @@ static void on_chanhop_fd(int fd, uint32_t events, void *user)
 {
 	(void)fd; (void)events;
 	chanhop_on_timer(user);
+}
+
+static void on_autoattack_fd(int fd, uint32_t events, void *user)
+{
+	(void)fd; (void)events;
+	autoattack_on_timer(user);
 }
 
 /* ---- command handlers ----------------------------------------------------- */
@@ -446,11 +455,25 @@ static int handle_recon_start(struct app *a, int fd, int64_t id)
 	if (capture_start(a->capture) < 0)
 		return reply_error(a->ipc, fd, id, "capture_start failed");
 
+	if (ensure_inject(a) == 0 && !a->aa) {
+		a->aa = autoattack_create(a->table, a->inject, a->ipc);
+		if (a->aa) {
+			ipc_add_fd(a->ipc, autoattack_fd(a->aa), EPOLLIN, on_autoattack_fd, a->aa);
+			autoattack_start(a->aa, 5000);
+		}
+	}
+
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
 static int handle_recon_stop(struct app *a, int fd, int64_t id)
 {
+	if (a->aa) {
+		autoattack_stop(a->aa);
+		ipc_remove_fd(a->ipc, autoattack_fd(a->aa));
+		autoattack_destroy(a->aa);
+		a->aa = NULL;
+	}
 	if (a->capture) capture_stop(a->capture);
 	return reply_ok_empty(a->ipc, fd, id);
 }
