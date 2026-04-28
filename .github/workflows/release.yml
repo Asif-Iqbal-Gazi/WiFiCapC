@@ -24,6 +24,13 @@ jobs:
         run: |
           wget -q https://github.com/thom311/libnl/releases/download/libnl3_9_0/libnl-3.9.0.tar.gz
           tar xf libnl-3.9.0.tar.gz
+
+          # libnl 3.9.0 is missing <time.h> in two files — fatal with GCC 13
+          sed -i 's|#include "nl-aux-xfrm/nl-xfrm.h"|#include "nl-aux-xfrm/nl-xfrm.h"\n#include <time.h>|' \
+            libnl-3.9.0/lib/xfrm/ae.c
+          sed -i 's|#include "nl-aux-core/nl-core.h"|#include "nl-aux-core/nl-core.h"\n#include <time.h>|' \
+            libnl-3.9.0/lib/socket.c
+
           cd libnl-3.9.0
           ./configure \
             --host=aarch64-linux-gnu \
