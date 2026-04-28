@@ -7,7 +7,7 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/wificapc \
     --socket /run/wificapc.sock --mode 0660 \
-    --iface wlan0mon \
+    --iface wlan0 \
     --hs-dir /etc/pwnagotchi/handshakes \
     --attack
 Restart=always

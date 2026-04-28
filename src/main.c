@@ -772,8 +772,14 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 	a->iface_open = 1;
 	emit_event_iface_mode(a, a->iface.mode);
 
+	/* NL80211_CMD_SET_INTERFACE requires the interface to be DOWN. */
+	iface_link_down(&a->iface);
 	if (iface_set_mode(&a->iface, IFACE_MODE_MONITOR) < 0) {
 		log_err("autostart: set monitor mode on %s failed", o->iface);
+		return -1;
+	}
+	if (iface_link_up(&a->iface) < 0) {
+		log_err("autostart: bring up %s failed", o->iface);
 		return -1;
 	}
 	emit_event_iface_mode(a, IFACE_MODE_MONITOR);
