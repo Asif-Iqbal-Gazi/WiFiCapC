@@ -15,25 +15,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up aarch64 cross-compile environment
+      - name: Install cross-compiler
         run: |
-          sudo dpkg --add-architecture arm64
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            libnl-genl-3-dev:arm64
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cross-compile libnl for aarch64 (static)
+        run: |
+          wget -q https://github.com/thom311/libnl/releases/download/libnl3_9_0/libnl-3.9.0.tar.gz
+          tar xf libnl-3.9.0.tar.gz
+          cd libnl-3.9.0
+          ./configure \
+            --host=aarch64-linux-gnu \
+            --prefix=/opt/libnl-aarch64 \
+            --enable-static \
+            --disable-shared \
+            --disable-cli \
+            --disable-pthreads
+          make -j$(nproc) install
 
       - name: Extract version from tag
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
 
-      - name: Build
+      - name: Build wificapc
         run: |
           make \
             CC=aarch64-linux-gnu-gcc \
-            NL_CFLAGS="-I/usr/include/libnl3" \
-            NL_LIBS="-L/usr/lib/aarch64-linux-gnu -lnl-genl-3 -lnl-3"
+            NL_CFLAGS="-I/opt/libnl-aarch64/include/libnl3" \
+            NL_LIBS="/opt/libnl-aarch64/lib/libnl-genl-3.a /opt/libnl-aarch64/lib/libnl-3.a"
 
-      - name: Verify aarch64 binary
+      - name: Verify binary is aarch64
         run: file wificapc | grep -q "aarch64"
 
       - name: Package
