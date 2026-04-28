@@ -655,8 +655,9 @@ static void on_handshake_event(enum hs_event evt,
 		emit_hs_event(a, "pmkid.captured", pl, NULL);
 		break;
 	case HS_EVT_DONE:
-		/* .22000 was written directly by handshake.c; broadcast its path. */
-		emit_hs_event(a, "handshake.done", pl, pl->hash22000_path);
+		/* Broadcast only if a .22000 file was actually written. */
+		emit_hs_event(a, "handshake.done", pl,
+		              pl->hash22000_path[0] ? pl->hash22000_path : NULL);
 		break;
 	}
 }
