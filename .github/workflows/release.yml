@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-aarch64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up aarch64 cross-compile environment
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            libnl-genl-3-dev:arm64
+
+      - name: Extract version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+
+      - name: Build
+        run: |
+          make \
+            CC=aarch64-linux-gnu-gcc \
+            NL_CFLAGS="-I/usr/include/libnl3" \
+            NL_LIBS="-L/usr/lib/aarch64-linux-gnu -lnl-genl-3 -lnl-3"
+
+      - name: Verify aarch64 binary
+        run: file wificapc | grep -q "aarch64"
+
+      - name: Package
+        run: |
+          sha256sum wificapc | awk '{print "SHA256 = " $1}' > wificapc.sha256
+          zip wificapc-${{ env.VERSION }}-aarch64.zip wificapc wificapc.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wificapc-${{ env.VERSION }}-aarch64.zip
+          generate_release_notes: true
