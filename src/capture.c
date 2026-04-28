@@ -82,8 +82,11 @@ static void process_frame(struct capture *c, size_t n)
 	time_t now     = time(NULL);
 
 	/* RSSI filter: only suppresses *recon* updates so the table doesn't
-	 * fill with distant noise. Handshake routing below is unaffected. */
-	int recon_ok = (rt.rssi_dbm == 127) || (rt.rssi_dbm >= c->min_rssi);
+	 * fill with distant noise. Handshake routing below is unaffected.
+	 * c->min_rssi == RT_RSSI_ABSENT (127) means "no filter". */
+	int recon_ok = (c->min_rssi == RT_RSSI_ABSENT) ||
+	               (rt.rssi_dbm == RT_RSSI_ABSENT) ||
+	               (rt.rssi_dbm >= c->min_rssi);
 
 	switch (d.kind) {
 	case DOT11_FRAME_BEACON:
