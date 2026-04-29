@@ -20,7 +20,7 @@ DEPS    := $(OBJS:.o=.d)
 
 BIN     := wificapc
 
-.PHONY: all clean install uninstall test asan
+.PHONY: all clean install install-systemd uninstall uninstall-systemd test asan
 
 all: $(BIN)
 
@@ -44,13 +44,20 @@ $(BUILD):
 
 -include $(DEPS)
 
+# Default install ships only the binary. Image builds (e.g. pwnagotchi) drop
+# in their own systemd units; standalone deployments can opt in via
+# `make install install-systemd`.
 install: $(BIN)
 	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+
+install-systemd:
 	install -D -m 0644 systemd/wificapc.service $(DESTDIR)/etc/systemd/system/wificapc.service
 	install -D -m 0644 systemd/wificapc-prep.service $(DESTDIR)/etc/systemd/system/wificapc-prep.service
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
+
+uninstall-systemd:
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc.service
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc-prep.service
 

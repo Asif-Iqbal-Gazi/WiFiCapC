@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "handshake.h"
 #include "log.h"
+#include "pcap.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -27,6 +28,9 @@ struct hs_pair {
 	time_t   first_seen;
 	time_t   last_seen;
 	char     hash22000_path[256]; /* written by write_hash22000 */
+	char     pcap_path[256];      /* per-pair raw capture (radiotap+802.11) */
+	struct pcap_writer *pcap;     /* opened on first frame, closed on retire */
+	int      beacon_written;      /* the cached beacon was written to pcap */
 
 	/* .22000 assembly material */
 	uint8_t  pmkid_bytes[16];
@@ -157,7 +161,7 @@ static void payload_emit(struct handshake *h, enum hs_event evt,
 {
 	if (!h->emit) return;
 	struct hs_emit_payload pl = {
-		.pcap_path       = NULL,
+		.pcap_path       = p->pcap_path[0] ? p->pcap_path : NULL,
 		.hash22000_path  = p->hash22000_path[0] ? p->hash22000_path : NULL,
 		.channel         = p->channel,
 		.rssi            = p->rssi,
@@ -169,10 +173,43 @@ static void payload_emit(struct handshake *h, enum hs_event evt,
 	h->emit(evt, &pl, h->user);
 }
 
+/* Open the per-pair pcap on the first frame we keep, and stamp the most
+ * recent beacon at the head — hcxpcapngtool needs the SSID + RSN IE that
+ * the beacon carries to assemble a usable handshake. Idempotent. */
+static void ensure_pcap(struct handshake *h, struct hs_pair *p)
+{
+	if (p->pcap) return;
+	if (ensure_dir(h->dir) < 0) return;
+
+	char ap_hex[13], sta_hex[13];
+	mac_hex(p->ap_bssid, ap_hex);
+	mac_hex(p->sta_mac,  sta_hex);
+	snprintf(p->pcap_path, sizeof p->pcap_path,
+	         "%s/%s_%s.pcap", h->dir, ap_hex, sta_hex);
+
+	p->pcap = pcap_open(p->pcap_path);
+	if (!p->pcap) {
+		p->pcap_path[0] = '\0';
+		return;
+	}
+	if (h->table) {
+		const struct ap_record *apr = table_find_ap(h->table, p->ap_bssid);
+		if (apr && apr->last_beacon_len > 0) {
+			(void)pcap_write(p->pcap, apr->last_beacon, apr->last_beacon_len);
+			p->beacon_written = 1;
+		}
+	}
+}
+
 static void close_pair(struct handshake *h, struct hs_pair *p)
 {
 	if (!p->in_use) return;
 	write_hash22000(h, p);
+	if (p->pcap) {
+		pcap_close(p->pcap);
+		p->pcap = NULL;
+		log_info("handshake: closed %s", p->pcap_path);
+	}
 	payload_emit(h, HS_EVT_DONE, p);
 	memset(p, 0, sizeof *p);
 	h->n_pairs--;
@@ -222,7 +259,6 @@ void handshake_observe(struct handshake *h,
                        int channel, int rssi)
 {
 	if (!h) return;
-	(void)frame; (void)frame_len;
 	if (d->kind != DOT11_FRAME_DATA) return;
 
 	struct eapol_info ek;
@@ -251,6 +287,15 @@ void handshake_observe(struct handshake *h,
 	p->channel   = channel;
 	p->rssi      = rssi;
 	p->last_seen = time(NULL);
+
+	/* Capture every EAPOL-Key frame for this pair into the per-pair pcap.
+	 * The cached beacon (BSSID's last beacon) was written when the pcap was
+	 * opened so hcxpcapngtool can reach the SSID + RSN IE. wpa-sec.org and
+	 * any offline cracker that runs hcxpcapngtool over the upload accept
+	 * this directly — they reject raw .22000. */
+	ensure_pcap(h, p);
+	if (p->pcap && frame && frame_len > 0)
+		(void)pcap_write(p->pcap, frame, frame_len);
 
 	if (ek.msg >= EAPOL_MSG_M1 && ek.msg <= EAPOL_MSG_M4)
 		p->msg_bitmap |= (uint8_t)(1u << (ek.msg - 1));
