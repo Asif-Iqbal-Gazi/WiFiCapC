@@ -205,10 +205,27 @@ static void close_pair(struct handshake *h, struct hs_pair *p)
 {
 	if (!p->in_use) return;
 	write_hash22000(h, p);
+
+	/* A pair is "usable" iff write_hash22000 produced a file, i.e. we
+	 * captured PMKID or (ANonce + M2). Pairs that only produced an M3
+	 * (or other partial states) carry no handshake material that
+	 * wpa-sec / hcxpcapngtool can do anything with — uploading them
+	 * just trains wpa-sec to mark our submissions invalid. Drop the
+	 * pcap on disk and clear pcap_path so the agent emits nothing. */
+	int usable = (p->hash22000_path[0] != '\0');
 	if (p->pcap) {
 		pcap_close(p->pcap);
 		p->pcap = NULL;
-		log_info("handshake: closed %s", p->pcap_path);
+	}
+	if (p->pcap_path[0]) {
+		if (usable) {
+			log_info("handshake: closed %s", p->pcap_path);
+		} else {
+			if (unlink(p->pcap_path) == 0)
+				log_debug("handshake: dropped incomplete pcap %s",
+				          p->pcap_path);
+			p->pcap_path[0] = '\0';
+		}
 	}
 	payload_emit(h, HS_EVT_DONE, p);
 	memset(p, 0, sizeof *p);
