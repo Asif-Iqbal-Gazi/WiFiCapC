@@ -26,7 +26,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.3"
+#define WIFICAPC_VER     "0.6.4"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300

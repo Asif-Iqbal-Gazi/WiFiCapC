@@ -5,6 +5,12 @@ DefaultDependencies=no
 Before=wificapc.service
 # Run after udev is up so the iface re-appears predictably after modprobe.
 After=systemd-udevd.service
+# Note for pwnagotchi-paired deployments: the pwnagotchi image installs its
+# own wificapc.service that points at /usr/bin/wificapc-launcher (which does
+# the modprobe cycle + monitor iface bring-up itself), so this prep unit is
+# unused there. It still ships from the WiFiCapC repo for users running the
+# daemon standalone — driver-cycle recovery without writing their own
+# launcher. Harmless when overridden.
 
 [Service]
 Type=oneshot

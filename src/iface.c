@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 
 #include <linux/if.h>
 #include <linux/nl80211.h>
+#include <linux/rfkill.h>
 
 #include <netlink/netlink.h>
 #include <netlink/genl/genl.h>
@@ -227,11 +229,45 @@ int iface_open(struct iface *i, const char *name)
 }
 
 /* ---------------------------------------------------------------------------
+ * rfkill: best-effort soft-unblock of all WLAN devices.
+ *
+ * After a brcmfmac modprobe cycle, systemd-rfkill restores any persisted
+ * soft-block on the new rfkill device, which leaves SIOCSIFFLAGS IFF_UP
+ * failing with EBUSY. Clearing the block via /dev/rfkill writes one
+ * 8-byte event and is cheap enough to do on every link_up.
+ *
+ * Best-effort: a missing /dev/rfkill node or a write failure logs at
+ * debug and lets the caller proceed. The subsequent link_up either
+ * succeeds (rfkill wasn't the problem) or fails with a clear error.
+ * ------------------------------------------------------------------------- */
+
+static void rfkill_unblock_wlan(void)
+{
+	int fd = open("/dev/rfkill", O_WRONLY | O_CLOEXEC);
+	if (fd < 0) {
+		log_debug("rfkill: open /dev/rfkill: %s", strerror(errno));
+		return;
+	}
+	struct rfkill_event ev = {0};
+	ev.op   = RFKILL_OP_CHANGE_ALL;
+	ev.type = RFKILL_TYPE_WLAN;
+	ev.soft = 0;
+	if (write(fd, &ev, sizeof ev) != (ssize_t)sizeof ev)
+		log_debug("rfkill: write: %s", strerror(errno));
+	close(fd);
+}
+
+/* ---------------------------------------------------------------------------
  * iface_link_up / iface_link_down via SIOCSIFFLAGS.
  * ------------------------------------------------------------------------- */
 
 static int set_link_flag(struct iface *i, int up)
 {
+	/* Clear any soft rfkill before trying to bring the link up — SIOCSIFFLAGS
+	 * IFF_UP returns EBUSY otherwise on a freshly modprobed brcmfmac. Skipping
+	 * on link_down because down never trips on rfkill. */
+	if (up) rfkill_unblock_wlan();
+
 	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 	if (fd < 0) {
 		log_err("socket(AF_INET): %s", strerror(errno));
@@ -262,6 +298,37 @@ static int set_link_flag(struct iface *i, int up)
 
 int iface_link_up(struct iface *i)   { return set_link_flag(i, 1); }
 int iface_link_down(struct iface *i) { return set_link_flag(i, 0); }
+
+/* ---------------------------------------------------------------------------
+ * Disable Wi-Fi power save via NL80211_CMD_SET_POWER_SAVE.
+ *
+ * Best-effort: many drivers return EOPNOTSUPP for monitor mode (power save
+ * has no semantic there) and that's fine — we just want to make sure the
+ * setting isn't ENABLED on drivers that *do* honour it for monitor (rare)
+ * or that carry the flag across mode changes.
+ * ------------------------------------------------------------------------- */
+
+static void iface_disable_power_save(struct iface *i)
+{
+	struct nl_session s = {0};
+	if (nlsess_open(&s) < 0) return;
+
+	struct nl_msg *msg = nlmsg_alloc();
+	if (!msg) { nlsess_close(&s); return; }
+
+	genlmsg_put(msg, 0, 0, s.family_id, 0, 0, NL80211_CMD_SET_POWER_SAVE, 0);
+	nla_put_u32(msg, NL80211_ATTR_IFINDEX,  (uint32_t)i->ifindex);
+	nla_put_u32(msg, NL80211_ATTR_PS_STATE, NL80211_PS_DISABLED);
+
+	int rc = nl_send_and_wait(&s, msg, NULL, NULL);
+	nlsess_close(&s);
+
+	if (rc < 0)
+		log_debug("iface %s: power_save disable returned %d (ok for monitor)",
+		          i->name, rc);
+	else
+		log_debug("iface %s: power_save disabled", i->name);
+}
 
 /* ---------------------------------------------------------------------------
  * iface_set_mode via NL80211_CMD_SET_INTERFACE.
@@ -312,6 +379,12 @@ int iface_set_mode(struct iface *i, enum iface_mode mode)
 
 	i->mode = mode;
 	log_info("iface %s: mode -> %s", i->name, iface_mode_name(mode));
+
+	/* Equivalent to `iw dev <iface> set power_save off`. Done after the
+	 * mode is committed and the link is up so the driver applies it to
+	 * the new mode rather than the prior one. */
+	if (mode == IFACE_MODE_MONITOR)
+		iface_disable_power_save(i);
 	return 0;
 }
 
