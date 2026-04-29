@@ -47,10 +47,12 @@ $(BUILD):
 install: $(BIN)
 	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	install -D -m 0644 systemd/wificapc.service $(DESTDIR)/etc/systemd/system/wificapc.service
+	install -D -m 0644 systemd/wificapc-prep.service $(DESTDIR)/etc/systemd/system/wificapc-prep.service
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc.service
+	rm -f $(DESTDIR)/etc/systemd/system/wificapc-prep.service
 
 test: $(BIN) test_parsers test_eapol
 	@./test_parsers

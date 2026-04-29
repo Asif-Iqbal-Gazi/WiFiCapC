@@ -1,7 +1,14 @@
 [Unit]
 Description=WiFiCapC — native 802.11 capture daemon
 Documentation=https://github.com/Asif-Iqbal-Gazi/WiFiCapC
-After=network.target
+# wificapc-prep cycles brcmfmac on every (re)start of this unit so a wedged
+# Broadcom firmware self-heals: capture errors → daemon exits (per the
+# "exit on AF_PACKET ENODEV/ENETDOWN" behavior) → systemd respawns this
+# unit → wificapc-prep reloads the driver before wificapc comes back up.
+# Wants= (not Requires=) so a non-Broadcom host without the prep unit still
+# starts wificapc cleanly.
+Wants=wificapc-prep.service
+After=wificapc-prep.service network.target
 
 [Service]
 Type=simple

@@ -1,0 +1,21 @@
+[Unit]
+Description=WiFiCapC prep — cycle Wi-Fi driver before capture starts
+Documentation=https://github.com/Asif-Iqbal-Gazi/WiFiCapC
+DefaultDependencies=no
+Before=wificapc.service
+# Run after udev is up so the iface re-appears predictably after modprobe.
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# The leading '-' on rmmod tolerates "module not loaded" so non-Broadcom
+# hosts (USB Wi-Fi only) still complete this unit successfully. The sleep
+# gives udev time to recreate wlan0 before wificapc.service looks for it.
+ExecStart=-/sbin/modprobe -r brcmfmac
+ExecStart=/sbin/modprobe brcmfmac
+ExecStart=/bin/sleep 2
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
