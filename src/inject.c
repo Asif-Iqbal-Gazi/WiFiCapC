@@ -176,9 +176,11 @@ int inject_assoc(struct inject *i, const uint8_t bssid[6],
 		log_warn("inject: auth send failed");
 		return -1;
 	}
-	/* Some drivers benefit from a tiny gap between auth and assoc so the
-	 * NIC's outbound queue doesn't reorder. ~5 ms is plenty. */
-	struct timespec ts = { .tv_sec = 0, .tv_nsec = 5 * 1000 * 1000 };
+	/* Tiny gap so the NIC's outbound queue doesn't reorder auth/assoc.
+	 * 1 ms is enough on every driver we've tested and small enough that
+	 * blasting auth+assoc to ~50 visible APs per attack tick (the
+	 * autonomous mode does this) doesn't stall the event loop. */
+	struct timespec ts = { .tv_sec = 0, .tv_nsec = 1 * 1000 * 1000 };
 	(void)nanosleep(&ts, NULL);
 
 	if (send_assoc_req(i, bssid, ssid, ssid_len) < 0) {

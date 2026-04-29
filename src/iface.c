@@ -114,8 +114,18 @@ static int nl_send_and_wait(struct nl_session *s, struct nl_msg *msg,
 		return rc;
 	}
 
-	while (!done && err > 0)
-		nl_recvmsgs(s->sk, cb);
+	while (!done && err > 0) {
+		int recv_rc = nl_recvmsgs(s->sk, cb);
+		if (recv_rc < 0) {
+			/* Treat any recv error as fatal for this transaction —
+			 * the alternative is to spin forever. The next iface
+			 * call opens a fresh socket, so transient kernel/driver
+			 * glitches recover on the next attempt. */
+			log_warn("nl_recvmsgs: %s", nl_geterror(recv_rc));
+			err = recv_rc;
+			break;
+		}
+	}
 
 	nl_cb_put(cb);
 	return err <= 0 ? err : 0;

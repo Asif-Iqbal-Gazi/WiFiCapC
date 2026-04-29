@@ -225,14 +225,34 @@ static int handle_iface_set(struct app *a, int fd, int64_t id, const char *args)
 	if (strlen(name) >= sizeof a->iface.name)
 		return reply_error(a->ipc, fd, id, "iface name too long");
 
-	/* Stop the hopper before we re-target. */
+	/* Re-targeting the iface invalidates everything bound to the previous
+	 * one: the AF_PACKET socket (capture) is bound by ifindex, inject
+	 * holds a pointer into a->iface and a tx fd from capture, and the
+	 * hopper holds a pointer into a->iface. Tear them down so the next
+	 * recon_start rebuilds them against the new iface. The handshake
+	 * tracker and recon table are iface-agnostic and can survive. */
+	if (a->attack_fd >= 0) {
+		ipc_remove_fd(a->ipc, a->attack_fd);
+		close(a->attack_fd);
+		a->attack_fd = -1;
+	}
+	if (a->inject) {
+		inject_destroy(a->inject);
+		a->inject = NULL;
+	}
+	if (a->capture) {
+		capture_destroy(a->capture);
+		a->capture = NULL;
+	}
 	if (a->hopper) {
 		chanhop_destroy(a->hopper);
 		a->hopper = NULL;
 	}
 
-	if (iface_open(&a->iface, name) < 0)
+	if (iface_open(&a->iface, name) < 0) {
+		a->iface_open = 0;
 		return reply_error(a->ipc, fd, id, "iface_open failed");
+	}
 
 	a->iface_open = 1;
 	return reply_ok_empty(a->ipc, fd, id);
@@ -655,9 +675,9 @@ static void on_handshake_event(enum hs_event evt,
 		emit_hs_event(a, "pmkid.captured", pl, NULL);
 		break;
 	case HS_EVT_DONE:
-		/* Broadcast only if a .22000 file was actually written. */
-		emit_hs_event(a, "handshake.done", pl,
-		              pl->hash22000_path[0] ? pl->hash22000_path : NULL);
+		/* hash22000_path is already NULL when no .22000 was written
+		 * (handshake.c sets it from p->hash22000_path[0] ? ptr : NULL). */
+		emit_hs_event(a, "handshake.done", pl, pl->hash22000_path);
 		break;
 	}
 }

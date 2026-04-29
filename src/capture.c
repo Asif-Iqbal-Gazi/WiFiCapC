@@ -132,7 +132,14 @@ static void on_socket_readable(int fd, uint32_t events, void *user)
 		if (n < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) return;
 			if (errno == EINTR) continue;
-			log_warn("capture recv: %s", strerror(errno));
+			/* ENETDOWN, ENODEV (USB iface yanked), etc. — the capture
+			 * is unrecoverable in-place. Ask the main loop to stop;
+			 * systemd's Restart=always will bring us back with a
+			 * fresh AF_PACKET socket. Without this the daemon would
+			 * stay "alive" but never deliver another frame. */
+			log_err("capture recv: %s — stopping daemon for restart",
+			        strerror(errno));
+			ipc_stop(c->ipc);
 			return;
 		}
 		if (n == 0) return;

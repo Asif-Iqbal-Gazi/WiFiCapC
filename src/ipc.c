@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,14 +38,14 @@ struct extra_fd {
 };
 
 struct ipc {
-	int              listen_fd;
-	int              epoll_fd;
-	int              stop;
-	struct client    clients[MAX_CLIENTS];
-	struct extra_fd  extras[MAX_EXTRA_FDS];
-	ipc_on_line_fn   on_line;
-	void            *on_line_user;
-	char             sock_path[108];
+	int                     listen_fd;
+	int                     epoll_fd;
+	volatile sig_atomic_t   stop;        /* set from signal handler */
+	struct client           clients[MAX_CLIENTS];
+	struct extra_fd         extras[MAX_EXTRA_FDS];
+	ipc_on_line_fn          on_line;
+	void                   *on_line_user;
+	char                    sock_path[108];
 };
 
 static struct extra_fd *extra_find(struct ipc *s, int fd)
@@ -223,10 +224,6 @@ static void on_client_event(struct ipc *s, int fd, uint32_t events)
 	struct client *c = client_find(s, fd);
 	if (!c) return;
 
-	if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-		/* fall through after read attempt to drain residual data */
-	}
-
 	if (events & EPOLLIN) {
 		for (;;) {
 			if (c->in_len >= sizeof c->in) {
@@ -254,6 +251,14 @@ static void on_client_event(struct ipc *s, int fd, uint32_t events)
 
 	if (events & EPOLLOUT)
 		client_drain_outbox(s, c);
+
+	/* If the peer half-closed or the kernel reported an error, drop the fd
+	 * now. Without this, EPOLLERR/EPOLLHUP without an accompanying EPOLLIN
+	 * would re-fire forever (level-triggered) and slowly exhaust the fd
+	 * table on a long-running daemon. */
+	if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+		client_close(s, c);
+	}
 }
 
 struct ipc *ipc_create(const char *sock_path, mode_t mode)
