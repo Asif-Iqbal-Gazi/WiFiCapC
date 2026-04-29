@@ -15,6 +15,12 @@ RemainAfterExit=no
 ExecStart=-/sbin/modprobe -r brcmfmac
 ExecStart=/sbin/modprobe brcmfmac
 ExecStart=/bin/sleep 2
+# Reloading brcmfmac re-creates the rfkill device, and systemd-rfkill
+# will restore any persisted soft-block on it. If we leave the radio
+# blocked, iface_link_up later fails with EBUSY and capture never
+# starts. Unblock unconditionally — the leading '-' tolerates a host
+# without the rfkill binary (e.g. minimal images that omit it).
+ExecStart=-/usr/sbin/rfkill unblock wifi
 TimeoutStartSec=30
 
 [Install]
