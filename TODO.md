@@ -4,6 +4,17 @@ Items that survived triage and are worth a future session. Roughly in
 descending impact-for-effort. Most have an integration angle on the
 pwnagotchi side; cross-references are tagged `(pwnagotchi: …)`.
 
+## Design ideas (not yet TODOs)
+
+Bigger than a single PR — captured separately so they can spawn
+multiple TODO items when ready.
+
+- [docs/IDEAS/iface-and-driver-health.md](docs/IDEAS/iface-and-driver-health.md)
+  — why `iface_set_mode(MONITOR)` is broken on brcmfmac, why the
+  `wlan0mon` sibling-iface dance is the contract, and a phased plan
+  for daemon-side wedge detection + an external recovery actor
+  (`wificapc-watchdog`). Cross-cuts pwnagotchi.
+
 ## Reliability / stability
 
 ### TODO-R1 — Persist recon table across daemon restarts
