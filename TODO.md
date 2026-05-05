@@ -87,10 +87,11 @@ multiple TODO items when ready.
   the majority of targets.
 - Files: `src/iface.c`, `src/main.c`.
 
-### TODO-Q4 — Expand `stats` reply
-- [ ] Add: `n_handshake_pairs`, `current_channel`, `hopping`,
-      `attack_active`, `iface_mode`, `daemon_uptime`,
-      `min_rssi_filter`.
+### TODO-Q4 — Expand `stats` reply ✅ v0.6.7 (68709f0)
+- [x] Add: `n_handshake_pairs`, `current_channel`, `hopping`,
+      `attack_active`, `iface_mode`, `uptime`. (`min_rssi_filter`
+      deferred — daemon doesn't expose its current min_rssi setter
+      back yet; not blocking.)
 - Why: a single `stats` round-trip should be all an operator needs to
   diagnose state. Today they have to run `iface_info` + `stats` +
   inspect logs.
@@ -98,9 +99,9 @@ multiple TODO items when ready.
 - pwnagotchi: optional UI surfacing (e.g. show current channel in the
   status line).
 
-### TODO-Q5 — Per-pair handshake-file cleanup IPC
-- [ ] New `delete_handshake` command taking `ap_bssid`/`sta_mac`
-      that unlinks the pcap + .22000 + journal references.
+### TODO-Q5 — Per-pair handshake-file cleanup IPC ✅ v0.6.7 (68709f0)
+- [x] New `delete_handshake` command taking `ap_bssid`/`sta_mac`
+      that unlinks the pcap + .22000.
 - Why: handshake dir grows unbounded. Pwnagotchi knows which
   uploads succeeded; it should be able to ask the daemon to remove
   them. Today the daemon owns those files and has no API.
