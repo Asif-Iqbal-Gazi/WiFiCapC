@@ -81,4 +81,17 @@ void handshake_tick(struct handshake *h, time_t now);
 /* How many pairs are currently being tracked. */
 int  handshake_n_pairs(const struct handshake *h);
 
+/*
+ * Unlink the .pcap and .22000 written for a (ap_bssid, sta_mac) pair,
+ * if they exist on disk. Idempotent. Used by IPC consumers (e.g.
+ * pwnagotchi's wpa-sec plugin) to remove handshake artifacts after
+ * a successful upload, so the handshake dir doesn't grow unbounded.
+ *
+ * Returns the number of files removed (0, 1, or 2). Negative on
+ * argument error.
+ */
+int  handshake_delete_pair(const struct handshake *h,
+                           const uint8_t ap_bssid[6],
+                           const uint8_t sta_mac[6]);
+
 #endif

@@ -267,6 +267,40 @@ int handshake_set_dir(struct handshake *h, const char *dir)
 }
 
 const char *handshake_dir(const struct handshake *h) { return h->dir; }
+
+int handshake_delete_pair(const struct handshake *h,
+                          const uint8_t ap_bssid[6],
+                          const uint8_t sta_mac[6])
+{
+	if (!h || !ap_bssid || !sta_mac) return -1;
+
+	char ap_hex[13], sta_hex[13];
+	mac_hex(ap_bssid, ap_hex);
+	mac_hex(sta_mac,  sta_hex);
+
+	char path[sizeof h->dir + 64];
+	int  removed = 0;
+
+	/* .22000 */
+	snprintf(path, sizeof path, "%s/%s_%s.22000", h->dir, ap_hex, sta_hex);
+	if (unlink(path) == 0) {
+		removed++;
+		log_debug("handshake: removed %s", path);
+	} else if (errno != ENOENT) {
+		log_warn("handshake: unlink %s: %s", path, strerror(errno));
+	}
+
+	/* .pcap */
+	snprintf(path, sizeof path, "%s/%s_%s.pcap", h->dir, ap_hex, sta_hex);
+	if (unlink(path) == 0) {
+		removed++;
+		log_debug("handshake: removed %s", path);
+	} else if (errno != ENOENT) {
+		log_warn("handshake: unlink %s: %s", path, strerror(errno));
+	}
+
+	return removed;
+}
 int         handshake_n_pairs(const struct handshake *h) { return h->n_pairs; }
 
 void handshake_observe(struct handshake *h,

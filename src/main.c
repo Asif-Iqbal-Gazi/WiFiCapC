@@ -26,7 +26,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.6"
+#define WIFICAPC_VER     "0.6.7"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -707,6 +707,40 @@ static int handle_set_handshake_dir(struct app *a, int fd, int64_t id, const cha
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+static int handle_delete_handshake(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'ap_bssid' / 'sta_mac'");
+	if (!a->hs)
+		return reply_error(a->ipc, fd, id, "no handshake module");
+
+	char ap_s[32], sta_s[32];
+	if (proto_args_get_str(args, "ap_bssid", ap_s, sizeof ap_s) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'ap_bssid'");
+	if (proto_args_get_str(args, "sta_mac",  sta_s, sizeof sta_s) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'sta_mac'");
+
+	uint8_t ap[6], sta[6];
+	if (parse_mac(ap_s,  ap)  < 0)
+		return reply_error(a->ipc, fd, id, "ap_bssid is not a MAC");
+	if (parse_mac(sta_s, sta) < 0)
+		return reply_error(a->ipc, fd, id, "sta_mac is not a MAC");
+
+	int removed = handshake_delete_pair(a->hs, ap, sta);
+
+	char  buf[128];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "removed", removed)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
 /* ---- autonomous attack engine --------------------------------------------- */
 
 static void on_attack_timer(int fd, uint32_t events, void *user)
@@ -973,7 +1007,7 @@ static int handle_assoc(struct app *a, int fd, int64_t id, const char *args)
 
 static int handle_stats(struct app *a, int fd, int64_t id)
 {
-	char  buf[256];
+	char  buf[512];
 	size_t pos = 0;
 	int    first = 1;
 	ssize_t r;
@@ -985,6 +1019,9 @@ static int handle_stats(struct app *a, int fd, int64_t id)
 	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "n_stas",
 	                         a->table ? table_n_stas(a->table) : 0)) < 0) return -1;
 	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "n_handshake_pairs",
+	                         a->hs ? handshake_n_pairs(a->hs) : 0)) < 0) return -1;
+	pos = (size_t)r;
 	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "frames_total",
 	                         (int64_t)capture_frames_total(a->capture))) < 0) return -1;
 	pos = (size_t)r;
@@ -993,6 +1030,22 @@ static int handle_stats(struct app *a, int fd, int64_t id)
 	pos = (size_t)r;
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "capturing",
 	                          capture_is_running(a->capture))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "hopping",
+	                          chanhop_is_running(a->hopper))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "current_channel",
+	                         chanhop_current(a->hopper) ? chanhop_current(a->hopper)
+	                                                    : a->iface.channel)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "attack_active",
+	                          a->attack_fd >= 0)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "iface_mode",
+	                         iface_mode_name(a->iface.mode))) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "uptime",
+	                         (int64_t)(time(NULL) - a->started))) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
@@ -1031,6 +1084,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "stats")       == 0) return handle_stats(a, fd, req.id);
 	if (strcmp(req.cmd, "clear")       == 0) return handle_clear(a, fd, req.id);
 	if (strcmp(req.cmd, "set_handshake_dir") == 0) return handle_set_handshake_dir(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "delete_handshake")  == 0) return handle_delete_handshake(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_wpasec")  == 0) return handle_set_wpasec(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "deauth")      == 0) return handle_deauth(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "assoc")       == 0) return handle_assoc(a, fd, req.id, req.args_raw);
