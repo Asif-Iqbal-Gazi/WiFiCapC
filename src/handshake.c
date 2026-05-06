@@ -206,23 +206,35 @@ static void close_pair(struct handshake *h, struct hs_pair *p)
 	if (!p->in_use) return;
 	write_hash22000(h, p);
 
-	/* A pair is "usable" iff write_hash22000 produced a file, i.e. we
-	 * captured PMKID or (ANonce + M2). Pairs that only produced an M3
-	 * (or other partial states) carry no handshake material that
-	 * wpa-sec / hcxpcapngtool can do anything with — uploading them
-	 * just trains wpa-sec to mark our submissions invalid. Drop the
-	 * pcap on disk and clear pcap_path so the agent emits nothing. */
-	int usable = (p->hash22000_path[0] != '\0');
+	/* Two distinct gates, with different semantics:
+	 *
+	 *   .22000 (offline cracking):
+	 *     written by write_hash22000 if  have_pmkid OR (have_anonce && have_m2).
+	 *     PMKID-only pairs are valid hashcat input.
+	 *
+	 *   .pcap (wpa-sec upload):
+	 *     wpa-sec.org runs hcxpcapngtool over uploads, which only
+	 *     accepts pcaps that carry an extractable EAPOL pair (M1+M2,
+	 *     M2+M3, M2+M4). Pcaps from PMKID-only pairs (just M1 with a
+	 *     PMKID KDE in encrypted key data) are rejected with "No
+	 *     valid handshakes/PMKIDs found in the submitted file." —
+	 *     hcxpcapngtool calls those M1s "KDV:0 AKM defined - not
+	 *     supported by hashcat/JtR" even though our own eapol.c can
+	 *     extract the PMKID just fine. So we keep the pcap only when
+	 *     we actually saw M2 (and an ANonce, which means we saw M1
+	 *     or M3), i.e. the wpa-sec-uploadable case. */
+	int upload_ok = (p->have_anonce && p->have_m2);
+
 	if (p->pcap) {
 		pcap_close(p->pcap);
 		p->pcap = NULL;
 	}
 	if (p->pcap_path[0]) {
-		if (usable) {
+		if (upload_ok) {
 			log_info("handshake: closed %s", p->pcap_path);
 		} else {
 			if (unlink(p->pcap_path) == 0)
-				log_debug("handshake: dropped incomplete pcap %s",
+				log_debug("handshake: dropped pcap (PMKID-only or partial) %s",
 				          p->pcap_path);
 			p->pcap_path[0] = '\0';
 		}
