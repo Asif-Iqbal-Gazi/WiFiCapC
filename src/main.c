@@ -26,7 +26,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.9"
+#define WIFICAPC_VER     "0.6.10"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -911,6 +911,23 @@ static int handle_set_ttls(struct app *a, int fd, int64_t id, const char *args)
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+static int handle_set_mac_rand(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+	int64_t en = 0;
+	if (proto_args_get_int(args, "enabled", &en) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+
+	a->mac_rand = !!en;
+	/* If the inject struct already exists (recon was started before this
+	 * call), apply the toggle to it now. Otherwise ensure_inject will
+	 * pick up a->mac_rand the next time it's created. */
+	if (a->inject)
+		inject_set_mac_rand(a->inject, a->mac_rand);
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 /* ---- frame injection (deauth / assoc) ------------------------------------ */
 
 static int ensure_inject(struct app *a)
@@ -1093,6 +1110,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "deauth")      == 0) return handle_deauth(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "assoc")       == 0) return handle_assoc(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "set_mac_rand") == 0) return handle_set_mac_rand(a, fd, req.id, req.args_raw);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }

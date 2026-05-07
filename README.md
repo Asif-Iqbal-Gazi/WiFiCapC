@@ -148,6 +148,7 @@ Line-delimited JSON over a `SOCK_STREAM` Unix socket (default
 | `clear`              | —                                                     | —                                       |
 | `set_handshake_dir`  | `path`                                                | —                                       |
 | `set_ttls`           | `ap_ttl?`, `sta_ttl?`, `min_rssi?`                    | —                                       |
+| `set_mac_rand`       | `enabled` (bool/int)                                  | —                                       |
 | `deauth`             | `bssid`, `sta?`, `count?`, `reason?`                  | `{sent:N}`                              |
 | `assoc`              | `bssid`                                               | —                                       |
 
