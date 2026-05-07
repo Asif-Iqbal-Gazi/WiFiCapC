@@ -129,13 +129,17 @@ multiple TODO items when ready.
 
 ## Security / stealth
 
-### TODO-S1 — MAC randomization for `inject_assoc`
-- [ ] Optional `--mac-rand` daemon flag (and per-call IPC arg) to
-      generate a fresh locally-administered random MAC for every
-      auth/assoc target.
-- Why: today every assoc carries the iface's real MAC, which is the
-  pwnagotchi's MAC. Trivially fingerprintable.
-- Files: `src/inject.c`, `src/main.c`.
+### TODO-S1 — MAC randomization for `inject_assoc` ✅ v0.6.9
+- [x] `--mac-rand` daemon flag generates a fresh locally-
+      administered, unicast MAC per `inject_assoc` call (one MAC
+      shared between the auth and assoc frames so the AP sees a
+      coherent dialog). `inject_set_mac_rand()` exposed in
+      `include/inject.h` for runtime toggle. Per-call IPC override
+      not implemented — flip via daemon flag at startup. Random
+      bytes via `getrandom(2)`, `rand()` fallback for sandboxed
+      hosts where it's unavailable. inject_deauth unchanged — it
+      spoofs the AP's BSSID by design.
+- Files: `src/inject.c`, `include/inject.h`, `src/main.c`.
 
 ### TODO-S2 — PMKID-only attack mode
 - [ ] New IPC `pmkid_only` flag (or new `assoc_pmkid` cmd) that sends

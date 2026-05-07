@@ -26,7 +26,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.8"
+#define WIFICAPC_VER     "0.6.9"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -48,6 +48,7 @@ struct app {
 	struct proc       *proc;   /* kept for future use; currently unused */
 	struct inject     *inject;
 	int                attack_fd;
+	int                mac_rand;   /* --mac-rand applied to inject when created */
 	time_t             started;
 };
 
@@ -920,7 +921,10 @@ static int ensure_inject(struct app *a)
 	int sock_fd = capture_sock_fd(a->capture);
 	if (sock_fd < 0) return -1;
 	a->inject = inject_create(sock_fd, &a->iface);
-	return a->inject ? 0 : -1;
+	if (!a->inject) return -1;
+	if (a->mac_rand)
+		inject_set_mac_rand(a->inject, 1);
+	return 0;
 }
 
 static int handle_deauth(struct app *a, int fd, int64_t id, const char *args)
@@ -1108,6 +1112,7 @@ struct opts {
 	int         hop_interval_ms;
 	int         attack;
 	int         attack_interval_ms;
+	int         mac_rand;
 };
 
 static void usage(FILE *f, const char *argv0)
@@ -1131,7 +1136,9 @@ static void usage(FILE *f, const char *argv0)
 	    "                           (default: 1-13)\n"
 	    "      --hop-interval MS    Channel dwell time ms (default: %d)\n"
 	    "  -A, --attack             Enable autonomous deauth+assoc attacks\n"
-	    "      --attack-interval MS Attack period ms (default: %d)\n",
+	    "      --attack-interval MS Attack period ms (default: %d)\n"
+	    "      --mac-rand           Use a fresh random MAC for every assoc\n"
+	    "                           (locally-administered, unicast)\n",
 	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
@@ -1140,6 +1147,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 	enum {
 		OPT_HOP_INTERVAL = 256,
 		OPT_ATTACK_INTERVAL,
+		OPT_MAC_RAND,
 	};
 	static const struct option longopts[] = {
 		{ "socket",           required_argument, NULL, 's' },
@@ -1154,6 +1162,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		{ "attack",           no_argument,       NULL, 'A' },
 		{ "hop-interval",     required_argument, NULL, OPT_HOP_INTERVAL },
 		{ "attack-interval",  required_argument, NULL, OPT_ATTACK_INTERVAL },
+		{ "mac-rand",         no_argument,       NULL, OPT_MAC_RAND },
 		{ 0 },
 	};
 	int c;
@@ -1174,6 +1183,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		case 'A': o->attack = 1; break;
 		case OPT_HOP_INTERVAL:    o->hop_interval_ms    = atoi(optarg); break;
 		case OPT_ATTACK_INTERVAL: o->attack_interval_ms = atoi(optarg); break;
+		case OPT_MAC_RAND:        o->mac_rand = 1; break;
 		default:  usage(stderr, argv[0]); return -1;
 		}
 	}
@@ -1211,6 +1221,7 @@ int main(int argc, char **argv)
 	struct app a = {0};
 	a.started    = time(NULL);
 	a.attack_fd  = -1;
+	a.mac_rand   = o.mac_rand;
 
 	a.ipc = ipc_create(o.sock_path, o.sock_mode);
 	if (!a.ipc) {

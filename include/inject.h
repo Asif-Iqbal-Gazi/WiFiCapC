@@ -28,6 +28,16 @@ struct inject *inject_create(int sock_fd, const struct iface *iface);
 void           inject_destroy(struct inject *i);
 
 /*
+ * Toggle MAC randomization for inject_assoc. When enabled, every
+ * inject_assoc() call generates a fresh locally-administered, unicast
+ * random MAC and uses it as the source address for both the auth and
+ * the assoc frame (so the AP sees a coherent dialog). Off by default —
+ * the iface's hardware MAC is used. inject_deauth is unaffected; it
+ * spoofs the AP's own BSSID as the source by design.
+ */
+void inject_set_mac_rand(struct inject *i, int enable);
+
+/*
  * Send `count` deauthentication frames (count >= 1).
  *
  * `bssid` is the access point.

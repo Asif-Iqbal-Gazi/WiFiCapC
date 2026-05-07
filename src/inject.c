@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -12,6 +13,7 @@
 struct inject {
 	int                 sock_fd;
 	const struct iface *iface;
+	int                 mac_rand;   /* 1 = randomize SA per inject_assoc */
 };
 
 struct inject *inject_create(int sock_fd, const struct iface *iface)
@@ -25,6 +27,26 @@ struct inject *inject_create(int sock_fd, const struct iface *iface)
 }
 
 void inject_destroy(struct inject *i) { free(i); }
+
+void inject_set_mac_rand(struct inject *i, int enable)
+{
+	if (!i) return;
+	i->mac_rand = !!enable;
+	log_info("inject: mac_rand %s", i->mac_rand ? "enabled" : "disabled");
+}
+
+/* Fresh locally-administered, unicast MAC. First octet's bit 1 (LA) is
+ * set, bit 0 (multicast) is cleared; the remaining bits are random.
+ * getrandom(2) is the right primitive — non-blocking, no fd needed. If
+ * it fails for any reason (sandbox, very old kernel) we fall back to
+ * rand() which is fine for stealth purposes (we're not key material). */
+static void mac_random_la(uint8_t out[6])
+{
+	if (getrandom(out, 6, 0) != 6) {
+		for (int i = 0; i < 6; i++) out[i] = (uint8_t)rand();
+	}
+	out[0] = (out[0] & 0xfe) | 0x02;
+}
 
 /* ---- radiotap TX prefix --------------------------------------------------- *
  * Minimal 12-byte header advertising one field: TX_FLAGS = NOACK. Drivers
@@ -109,13 +131,14 @@ int inject_deauth(struct inject *i, const uint8_t bssid[6],
  * Standard WPA2-PSK association advertisements. The body for both frames is
  * fixed apart from the SSID bytes — small enough to build inline. */
 
-static int send_auth_open(struct inject *i, const uint8_t bssid[6])
+static int send_auth_open(struct inject *i, const uint8_t bssid[6],
+                          const uint8_t sa[6])
 {
 	uint8_t pkt[RT_HDR_LEN + 24 + 6];
 	memcpy(pkt, RT_TX_HDR, RT_HDR_LEN);
 	uint8_t *frame = pkt + RT_HDR_LEN;
 
-	size_t pos = build_mgmt_hdr(frame, 0xb0, bssid, i->iface->mac, bssid);
+	size_t pos = build_mgmt_hdr(frame, 0xb0, bssid, sa, bssid);
 	/* algo=0 (open), seq=1, status=0 */
 	frame[pos++] = 0x00; frame[pos++] = 0x00;
 	frame[pos++] = 0x01; frame[pos++] = 0x00;
@@ -142,6 +165,7 @@ static const uint8_t RATES_IE[] = {
 };
 
 static int send_assoc_req(struct inject *i, const uint8_t bssid[6],
+                          const uint8_t sa[6],
                           const char *ssid, uint8_t ssid_len)
 {
 	if (ssid_len > 32) return -1;
@@ -150,7 +174,7 @@ static int send_assoc_req(struct inject *i, const uint8_t bssid[6],
 	memcpy(pkt, RT_TX_HDR, RT_HDR_LEN);
 	uint8_t *frame = pkt + RT_HDR_LEN;
 
-	size_t pos = build_mgmt_hdr(frame, 0x00, bssid, i->iface->mac, bssid);
+	size_t pos = build_mgmt_hdr(frame, 0x00, bssid, sa, bssid);
 	/* Capability info = 0x0431 (ESS + Privacy + ShortPreamble + ShortSlot) */
 	frame[pos++] = 0x31; frame[pos++] = 0x04;
 	/* Listen interval = 10 */
@@ -172,7 +196,17 @@ int inject_assoc(struct inject *i, const uint8_t bssid[6],
 {
 	if (!i || !bssid) return -1;
 
-	if (send_auth_open(i, bssid) < 0) {
+	/* Generate ONE source MAC for the whole inject_assoc call so the
+	 * AP sees a coherent auth->assoc dialog. Without mac_rand we just
+	 * use the iface's hardware MAC (current behavior). */
+	uint8_t        sa_buf[6];
+	const uint8_t *sa = i->iface->mac;
+	if (i->mac_rand) {
+		mac_random_la(sa_buf);
+		sa = sa_buf;
+	}
+
+	if (send_auth_open(i, bssid, sa) < 0) {
 		log_warn("inject: auth send failed");
 		return -1;
 	}
@@ -183,12 +217,13 @@ int inject_assoc(struct inject *i, const uint8_t bssid[6],
 	struct timespec ts = { .tv_sec = 0, .tv_nsec = 1 * 1000 * 1000 };
 	(void)nanosleep(&ts, NULL);
 
-	if (send_assoc_req(i, bssid, ssid, ssid_len) < 0) {
+	if (send_assoc_req(i, bssid, sa, ssid, ssid_len) < 0) {
 		log_warn("inject: assoc send failed");
 		return -1;
 	}
-	log_info("inject: auth+assoc to %02x:%02x:%02x:%02x:%02x:%02x ssid=\"%.*s\"",
+	log_info("inject: auth+assoc to %02x:%02x:%02x:%02x:%02x:%02x sa=%02x:%02x:%02x:%02x:%02x:%02x ssid=\"%.*s\"",
 	         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+	         sa[0],    sa[1],    sa[2],    sa[3],    sa[4],    sa[5],
 	         (int)ssid_len, ssid ? ssid : "");
 	return 0;
 }
