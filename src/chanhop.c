@@ -4,10 +4,18 @@
 #include "log.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+
+/* Backoff: a wedged channel (driver glitch, regulatory disable, etc.)
+ * will fail iface_set_channel forever otherwise. After this many
+ * consecutive failures we skip it for SKIP_TICKS rotations, then try
+ * once. If it still fails the count starts over and we skip again. */
+#define CHANHOP_FAIL_THRESHOLD  5
+#define CHANHOP_SKIP_TICKS      60   /* ~15 s at the default 250 ms tick */
 
 struct chanhop {
 	struct iface       *iface;
@@ -19,6 +27,8 @@ struct chanhop {
 	int                 interval_ms;
 	int                 running;
 	int                 current;      /* last channel actually set */
+	uint8_t             fail_count[CHANHOP_MAX_CHANNELS];
+	uint16_t            skip_remaining[CHANHOP_MAX_CHANNELS];
 	chanhop_on_tick_fn  on_tick;
 	void               *on_tick_user;
 };
@@ -96,6 +106,12 @@ int chanhop_start(struct chanhop *h, const int *channels, int n,
 	h->cursor      = 0;
 	h->interval_ms = interval_ms;
 
+	/* Reset backoff state on every (re)start — a previously-blacklisted
+	 * channel deserves a fresh chance, and a new schedule may not even
+	 * include the same channels in the same slots. */
+	memset(h->fail_count,     0, sizeof h->fail_count);
+	memset(h->skip_remaining, 0, sizeof h->skip_remaining);
+
 	/* Set first channel synchronously so the caller observes immediate
 	 * effect; subsequent hops happen on timer ticks. */
 	if (iface_set_channel(h->iface, h->channels[0]) < 0)
@@ -147,15 +163,42 @@ void chanhop_on_timer(struct chanhop *h)
 	}
 	if (!h->running || h->n_channels == 0) return;
 
-	h->cursor = (h->cursor + 1) % h->n_channels;
-	int ch    = h->channels[h->cursor];
+	/* One tick may attempt several channels: a wedged channel that
+	 * blacklists itself shouldn't burn a whole interval. Bound the
+	 * inner loop to n_channels so we can't spin forever. */
+	for (int tries = 0; tries < h->n_channels; tries++) {
+		h->cursor = (h->cursor + 1) % h->n_channels;
+		int idx   = h->cursor;
+		int ch    = h->channels[idx];
 
-	if (iface_set_channel(h->iface, ch) < 0) {
-		/* Don't stop the hop — log and try again next tick. */
-		log_warn("chanhop: failed to set channel %d", ch);
+		if (h->skip_remaining[idx] > 0) {
+			h->skip_remaining[idx]--;
+			if (h->skip_remaining[idx] == 0)
+				log_debug("chanhop: ch %d off blacklist, eligible next tick",
+				          ch);
+			continue;   /* still skipping; try the next channel this tick */
+		}
+
+		if (iface_set_channel(h->iface, ch) < 0) {
+			h->fail_count[idx]++;
+			log_warn("chanhop: ch %d set failed (consecutive=%u)",
+			         ch, (unsigned)h->fail_count[idx]);
+			if (h->fail_count[idx] >= CHANHOP_FAIL_THRESHOLD) {
+				h->skip_remaining[idx] = CHANHOP_SKIP_TICKS;
+				h->fail_count[idx]     = 0;
+				log_warn("chanhop: ch %d blacklisted for %d ticks",
+				         ch, CHANHOP_SKIP_TICKS);
+			}
+			continue;   /* try the next channel this tick */
+		}
+
+		/* Success: clear the consecutive-failure counter. */
+		h->fail_count[idx] = 0;
+		h->current = ch;
+		if (h->on_tick)
+			h->on_tick(ch, h->iface->freq_mhz, h->on_tick_user);
 		return;
 	}
-	h->current = ch;
-	if (h->on_tick)
-		h->on_tick(ch, h->iface->freq_mhz, h->on_tick_user);
+	log_debug("chanhop: every channel skipped or failing this tick");
+	return;
 }

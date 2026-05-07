@@ -30,13 +30,20 @@ multiple TODO items when ready.
   `_dump` / `_load`).
 - pwnagotchi: nothing required — events still fire on reload.
 
-### TODO-R2 — Backoff for channel-set failures
-- [ ] Per-channel "consecutive-failure" counter. If a channel fails N
-      times in a row (driver-side glitch), skip it for a tick budget
-      and emit `iface.channel_blacklisted`.
-- Why: `chanhop_on_timer` currently logs a warning and tries the same
-  channel on the next tick. Drivers that wedge on one channel keep
-  taking the slot.
+### TODO-R2 — Backoff for channel-set failures ✅ v0.6.11
+- [x] Per-channel `fail_count` (uint8) + `skip_remaining` (uint16) in
+      `struct chanhop`. After 5 consecutive `iface_set_channel`
+      failures the channel is skipped for 60 ticks (~15 s at the
+      default 250 ms interval), then retried; failures restart the
+      blacklist. A single tick may attempt up to `n_channels`
+      candidates so a wedged channel doesn't burn a whole interval.
+      Counters reset on every `chanhop_start`. Logs the consecutive
+      failure count and the blacklist transitions at WARN; off-list
+      transitions and "all skipped" at DEBUG.
+- The IPC `iface.channel_blacklisted` event is deliberately *not*
+  added — that's Phase 1 of `docs/IDEAS/iface-and-driver-health.md`
+  (the wider unhealthy-event story). When that lands, this counter
+  becomes one of its inputs.
 - Files: `src/chanhop.c`.
 
 ### TODO-R3 — Dynamic capacity for handshake pair table
