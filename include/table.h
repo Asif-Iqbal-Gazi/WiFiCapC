@@ -35,6 +35,13 @@ struct ap_record {
 	time_t   last_seen;
 	uint64_t frames;
 	int      in_use;
+	/* Autonomous-attack bookkeeping (see table_note_ap_attacked /
+	 * table_mark_ap_captured). Lets on_attack_timer skip APs we've already
+	 * cracked and rate-limit the rest instead of blasting every AP each
+	 * tick. Naturally bounded — cleared when the AP slot is evicted. */
+	int      captured;       /* handshake or PMKID already obtained */
+	time_t   last_attack;    /* last assoc attempt (0 = never) */
+	uint16_t attack_count;   /* assoc attempts so far */
 	/* The most-recent beacon is cached out-of-band (see table_cache_beacon /
 	 * table_ap_beacon), NOT inline here — keeping the 512-byte blob out of
 	 * ap_record makes snapshots (list_aps, the attack engine) ~5x cheaper
@@ -52,6 +59,8 @@ struct sta_record {
 	time_t   last_seen;
 	uint64_t frames;
 	int      in_use;
+	time_t   last_attack;    /* last deauth attempt (0 = never) */
+	uint16_t attack_count;   /* deauth attempts so far */
 };
 
 enum table_event {
@@ -102,6 +111,12 @@ size_t table_ap_beacon(const struct table *t, const uint8_t bssid[6],
 
 /* Look up by BSSID; returns NULL if not present. */
 const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6]);
+
+/* Autonomous-attack bookkeeping. All are no-ops if the MAC is unknown. */
+void table_mark_ap_captured(struct table *t, const uint8_t bssid[6]);
+int  table_ap_is_captured  (const struct table *t, const uint8_t bssid[6]);
+void table_note_ap_attacked (struct table *t, const uint8_t bssid[6], time_t now);
+void table_note_sta_attacked(struct table *t, const uint8_t mac[6],   time_t now);
 
 /* Scan tables and emit *_LOST for any record whose last_seen was longer ago
  * than the configured TTL. Call periodically. */

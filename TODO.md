@@ -123,13 +123,18 @@ then Tier 2 (perf), then Tier 3 (features).
       frames keep appending (closing would let ensure_pcap reopen+truncate).
 - Files: `src/handshake.c`.
 
-### P2 — smarter autonomous attack scheduling
-- [ ] `on_attack_timer` blasts auth+assoc at **every** visible AP and
-      deauth at every STA each interval, regardless of whether we already
-      have the handshake. Skip pairs already on disk / flagged; per-target
-      backoff after N attempts; prefer high-RSSI targets. Cuts RF airtime,
-      detectability, CPU, and log volume. (Pairs well with Q6.)
-- Files: `src/main.c::on_attack_timer`, `src/handshake.c`.
+### P2 — smarter autonomous attack scheduling ✅ v0.6.16
+- [x] `on_attack_timer` used to blast auth+assoc at **every** visible AP
+      and deauth at every STA each interval, regardless of whether we
+      already had the handshake. Now: APs flagged `captured` (via
+      `table_mark_ap_captured` on `handshake.done`) are skipped, so are
+      their STAs; per-target cooldown (`ATTACK_COOLDOWN_SEC=30`) and an
+      attempt cap (`ATTACK_MAX_ATTEMPTS=10`) throttle the rest; each tick
+      launches at most `ATTACK_PER_TICK=8` assoc + 8 deauth. Cuts RF
+      airtime, detectability, CPU, and log volume. (Pairs with Q6.)
+      Attack bookkeeping (`captured`/`last_attack`/`attack_count`) lives
+      in ap_record/sta_record, cleared on eviction.
+- Files: `src/main.c::on_attack_timer`, `src/table.c`, `include/table.h`.
 
 ---
 

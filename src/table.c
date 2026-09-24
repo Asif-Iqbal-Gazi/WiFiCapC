@@ -251,3 +251,31 @@ const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid
 	 * for read-only callers. */
 	return find_ap((struct table *)t, bssid);
 }
+
+void table_mark_ap_captured(struct table *t, const uint8_t bssid[6])
+{
+	struct ap_record *ap = find_ap(t, bssid);
+	if (ap) ap->captured = 1;
+}
+
+int table_ap_is_captured(const struct table *t, const uint8_t bssid[6])
+{
+	struct ap_record *ap = find_ap((struct table *)t, bssid);
+	return ap ? ap->captured : 0;
+}
+
+void table_note_ap_attacked(struct table *t, const uint8_t bssid[6], time_t now)
+{
+	struct ap_record *ap = find_ap(t, bssid);
+	if (!ap) return;
+	ap->last_attack = now;
+	if (ap->attack_count < 0xffff) ap->attack_count++;
+}
+
+void table_note_sta_attacked(struct table *t, const uint8_t mac[6], time_t now)
+{
+	struct sta_record *sta = find_sta(t, mac);
+	if (!sta) return;
+	sta->last_attack = now;
+	if (sta->attack_count < 0xffff) sta->attack_count++;
+}
