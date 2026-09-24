@@ -7,7 +7,6 @@
 #include "inject.h"
 #include "ipc.h"
 #include "log.h"
-#include "proc.h"
 #include "proto.h"
 #include "table.h"
 
@@ -26,7 +25,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.11"
+#define WIFICAPC_VER     "0.6.12"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -45,7 +44,6 @@ struct app {
 	struct table      *table;
 	struct capture    *capture;
 	struct handshake  *hs;
-	struct proc       *proc;   /* kept for future use; currently unused */
 	struct inject     *inject;
 	int                attack_fd;
 	int                mac_rand;   /* --mac-rand applied to inject when created */
@@ -770,7 +768,7 @@ static void on_attack_timer(int fd, uint32_t events, void *user)
 	}
 
 	if (n_aps + n_stas > 0)
-		log_debug("attack: %d assoc + %d deauth sent", n_aps, n_stas);
+		log_info("attack: %d assoc + %d deauth sent", n_aps, n_stas);
 }
 
 static int start_attack_timer(struct app *a, int interval_ms)
@@ -880,14 +878,6 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 	}
 
 	return 0;
-}
-
-static int handle_set_wpasec(struct app *a, int fd, int64_t id, const char *args)
-{
-	int64_t en = 0;
-	if (args) (void)proto_args_get_int(args, "enabled", &en);
-	(void)a;
-	return reply_ok_empty(a->ipc, fd, id);
 }
 
 /* ---- runtime tuning ------------------------------------------------------ */
@@ -1106,7 +1096,6 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "clear")       == 0) return handle_clear(a, fd, req.id);
 	if (strcmp(req.cmd, "set_handshake_dir") == 0) return handle_set_handshake_dir(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "delete_handshake")  == 0) return handle_delete_handshake(a, fd, req.id, req.args_raw);
-	if (strcmp(req.cmd, "set_wpasec")  == 0) return handle_set_wpasec(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "deauth")      == 0) return handle_deauth(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "assoc")       == 0) return handle_assoc(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
@@ -1272,7 +1261,6 @@ int main(int argc, char **argv)
 	if (a.capture) capture_destroy(a.capture);
 	if (a.hopper)  chanhop_destroy(a.hopper);
 	if (a.hs)      handshake_destroy(a.hs);
-	if (a.proc)    proc_destroy(a.proc);
 	if (a.table)   table_destroy(a.table);
 	ipc_destroy(a.ipc);
 	g_app = NULL;

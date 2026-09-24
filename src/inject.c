@@ -121,9 +121,12 @@ int inject_deauth(struct inject *i, const uint8_t bssid[6],
 	for (int n = 0; n < count; n++) {
 		if (send_frame(i, pkt, RT_HDR_LEN + pos) == 0) sent++;
 	}
-	log_info("inject: %d deauth %s %02x:%02x:%02x:%02x:%02x:%02x reason=%d",
-	         sent, sta ? "→" : "broadcast for",
-	         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], reason);
+	/* Per-target line is DEBUG: the autonomous attack engine calls this
+	 * for every visible STA every tick — at INFO that floods journald on
+	 * a days-uptime device. on_attack_timer logs a single INFO summary. */
+	log_debug("inject: %d deauth %s %02x:%02x:%02x:%02x:%02x:%02x reason=%d",
+	          sent, sta ? "→" : "broadcast for",
+	          bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], reason);
 	return sent;
 }
 
@@ -221,9 +224,11 @@ int inject_assoc(struct inject *i, const uint8_t bssid[6],
 		log_warn("inject: assoc send failed");
 		return -1;
 	}
-	log_info("inject: auth+assoc to %02x:%02x:%02x:%02x:%02x:%02x sa=%02x:%02x:%02x:%02x:%02x:%02x ssid=\"%.*s\"",
-	         bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
-	         sa[0],    sa[1],    sa[2],    sa[3],    sa[4],    sa[5],
-	         (int)ssid_len, ssid ? ssid : "");
+	/* DEBUG for the same reason as inject_deauth — per-AP flood under the
+	 * autonomous attack engine. on_attack_timer emits the INFO summary. */
+	log_debug("inject: auth+assoc to %02x:%02x:%02x:%02x:%02x:%02x sa=%02x:%02x:%02x:%02x:%02x:%02x ssid=\"%.*s\"",
+	          bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+	          sa[0],    sa[1],    sa[2],    sa[3],    sa[4],    sa[5],
+	          (int)ssid_len, ssid ? ssid : "");
 	return 0;
 }

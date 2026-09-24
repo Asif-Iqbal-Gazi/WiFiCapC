@@ -70,14 +70,18 @@ int radiotap_parse(const uint8_t *frame, size_t len, struct radiotap_info *out)
 	uint16_t it_len = le16(frame + 2);
 	if (it_len < 8 || it_len > len) return -1;
 
-	/* Walk extension words: bit 31 of each present-word means another follows. */
+	/* Walk extension words: bit 31 of each present-word means another
+	 * follows. Confirm the current word is fully within it_len BEFORE
+	 * reading its continuation bit — otherwise a malformed header (last
+	 * word's bit 31 set with no room for the next) reads past the buffer. */
 	const uint8_t *pres = frame + 4;
 	size_t         nwords = 1;
-	while ((le16(pres + 2) & 0x8000) && (4 + nwords * 4) <= it_len) {
+	for (;;) {
+		if (4 + nwords * 4 > it_len) return -1;   /* word doesn't fit */
+		if (!(le16(pres + 2) & 0x8000)) break;    /* no further words */
 		nwords++;
 		pres += 4;
 	}
-	if (4 + nwords * 4 > it_len) return -1;
 
 	uint32_t present = (uint32_t)frame[4]
 	                 | ((uint32_t)frame[5] << 8)

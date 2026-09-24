@@ -113,7 +113,18 @@ void table_observe_sta(struct table *t, const struct dot11_info *d,
                        int channel, int rssi, time_t now,
                        const uint8_t *ap_bssid)
 {
-	struct sta_record *sta = find_sta(t, d->sa);
+	/* The wireless station is the frame's sender (d->sa) for uplink,
+	 * IBSS, and probe frames — but for downlink data (FromDS && !ToDS)
+	 * d->sa is the *original* source, often a host on the wired LAN
+	 * behind the AP; the actual wireless client is the receiver (d->da).
+	 * Picking d->sa there floods the STA table with wired/upstream MACs
+	 * and makes the auto-attacker deauth clients that don't exist. */
+	const uint8_t *sta_mac = (d->from_ds && !d->to_ds) ? d->da : d->sa;
+
+	/* A group-addressed (multicast/broadcast) MAC is never a station. */
+	if (sta_mac[0] & 0x01) return;
+
+	struct sta_record *sta = find_sta(t, sta_mac);
 	int is_new = (sta == NULL);
 
 	if (is_new) {
@@ -123,7 +134,7 @@ void table_observe_sta(struct table *t, const struct dot11_info *d,
 			return;
 		}
 		memset(sta, 0, sizeof *sta);
-		memcpy(sta->mac, d->sa, 6);
+		memcpy(sta->mac, sta_mac, 6);
 		sta->first_seen = now;
 		sta->in_use     = 1;
 		t->n_stas++;

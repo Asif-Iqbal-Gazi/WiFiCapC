@@ -427,21 +427,20 @@ int iface_set_channel(struct iface *i, int channel)
 }
 
 /* ---------------------------------------------------------------------------
- * Channel/frequency helpers — covers 2.4 GHz, 5 GHz, and 6 GHz Wi-Fi.
- * Sourced from IEEE 802.11-2020 / 802.11ax channel plans.
+ * Channel/frequency helpers — 2.4 GHz only.
+ *
+ * The Raspberry Pi Zero 2 W radio (brcmfmac) is 2.4 GHz only, so we don't
+ * carry 5/6 GHz channel plans. Keeping them would also mean the 6 GHz
+ * channel-number range (1..233) overlaps the 2.4 GHz numbers (1..14),
+ * which can't be disambiguated from a bare channel int. If a 5 GHz USB
+ * adapter ever becomes a target, reintroduce this behind a band-aware
+ * API rather than overloading the channel number.
  * ------------------------------------------------------------------------- */
 
 int iface_chan_to_freq(int ch)
 {
 	if (ch >= 1 && ch <= 13) return 2407 + ch * 5;
 	if (ch == 14)            return 2484;
-	if (ch >= 36 && ch <= 177 && (ch % 4) == 0) return 5000 + ch * 5;
-	if (ch == 149 || ch == 153 || ch == 157 ||
-	    ch == 161 || ch == 165 || ch == 169 ||
-	    ch == 173 || ch == 177)
-		return 5000 + ch * 5;
-	/* 6 GHz Wi-Fi (PSC channels): 1 → 5955, step 5 MHz */
-	if (ch >= 1 && ch <= 233) return 5950 + ch * 5;
 	return -1;
 }
 
@@ -449,8 +448,6 @@ int iface_freq_to_chan(int f)
 {
 	if (f >= 2412 && f <= 2472) return (f - 2407) / 5;
 	if (f == 2484)              return 14;
-	if (f >= 5180 && f <= 5885) return (f - 5000) / 5;
-	if (f >= 5955 && f <= 7115) return (f - 5950) / 5;
 	return -1;
 }
 
