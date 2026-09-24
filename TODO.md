@@ -88,16 +88,17 @@ then Tier 2 (perf), then Tier 3 (features).
 
 # Tier 2 — performance / footprint (Zero 2)
 
-### P1 — persistent nl80211 session
-- [ ] Every `iface_set_channel` does `nl_socket_alloc` + `genl_connect` +
-      `genl_ctrl_resolve` (a full netlink round-trip just to re-resolve
-      the nl80211 family id) + the actual command — i.e. **two round
-      trips per hop**, 4 hops/s = 8 netlink transactions/s, forever, on a
-      1 GHz core. Hold one `nl_sock` + cached `family_id` open in
-      `struct iface`; reuse for channel/mode/power-save. Also switch
-      channel-set to `NL80211_CMD_SET_CHANNEL` (per-ifindex) — the header
-      already documents that; the code uses the legacy `SET_WIPHY`.
-- Files: `src/iface.c`, `include/iface.h`.
+### P1 — persistent nl80211 session ✅ v0.6.13
+- [x] Cache one `nl_sock` + resolved family id on `struct iface`
+      (`iface_nl()` opens lazily, `iface_close()` frees; `iface_open`
+      closes any stale session before re-targeting, shutdown closes it).
+      GET_INTERFACE / SET_INTERFACE / SET_POWER_SAVE / SET_WIPHY all reuse
+      it, so a channel hop no longer re-runs `genl_ctrl_resolve` (a full
+      round-trip) + socket alloc/free each tick.
+- Kept channel-set as `SET_WIPHY` (not `SET_CHANNEL`) deliberately: it's
+      the form brcmfmac reliably honours in monitor mode, and swapping it
+      is an independent risk the perf win doesn't need.
+- Files: `src/iface.c`, `include/iface.h`, `src/main.c`.
 
 ### P3 — stop snapshotting full ap_records onto the stack
 - [ ] `sizeof(struct ap_record)` is **632 bytes** (it carries a 512-byte

@@ -24,11 +24,22 @@ struct iface {
 	int             channel;    /* last set channel (0 = unknown) */
 	int             freq_mhz;   /* last set frequency */
 	uint8_t         mac[6];     /* hardware MAC */
+
+	/* Cached nl80211 session, opened lazily and reused across mode /
+	 * channel / power-save calls so channel hopping doesn't re-resolve
+	 * the genl family (a netlink round-trip) on every 250 ms tick.
+	 * Opaque here (void*) to keep libnl out of the public header. */
+	void           *nl;         /* struct nl_sock * */
+	int             nl_family;  /* nl80211 genl family id */
 };
 
 /* Look up name → ifindex/wiphy and snapshot current mode. Returns 0 on success.
  * Caller-supplied iface struct is fully populated. */
 int iface_open(struct iface *i, const char *name);
+
+/* Release the cached nl80211 session. Call on shutdown; iface_open also
+ * calls it internally before re-targeting a new interface. */
+void iface_close(struct iface *i);
 
 /* Bring link up or down via rtnetlink. */
 int iface_link_up(struct iface *i);

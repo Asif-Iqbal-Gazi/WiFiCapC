@@ -25,7 +25,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.12"
+#define WIFICAPC_VER     "0.6.13"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -1262,6 +1262,7 @@ int main(int argc, char **argv)
 	if (a.hopper)  chanhop_destroy(a.hopper);
 	if (a.hs)      handshake_destroy(a.hs);
 	if (a.table)   table_destroy(a.table);
+	iface_close(&a.iface);
 	ipc_destroy(a.ipc);
 	g_app = NULL;
 	log_close();

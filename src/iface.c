@@ -22,44 +22,46 @@
 #include <netlink/genl/family.h>
 
 /* ---------------------------------------------------------------------------
- * Tiny per-call netlink session. nl80211 calls are infrequent (mode/channel),
- * so we allocate-and-free the socket each time rather than holding one open.
- * Keeps state isolated and avoids re-entrancy concerns.
+ * Cached nl80211 session. mode/channel/power-save calls all reuse one
+ * socket held on the iface, so channel hopping doesn't pay a
+ * genl_ctrl_resolve round-trip (plus socket alloc/free) on every 250 ms
+ * tick. Opened lazily on first use; freed by iface_close (and by
+ * iface_open before re-targeting). Single-threaded, so no locking.
  * ------------------------------------------------------------------------- */
 
-struct nl_session {
-	struct nl_sock *sk;
-	int             family_id;
-};
-
-static int nlsess_open(struct nl_session *s)
+/* Return the cached socket, opening it on first use. NULL on failure.
+ * On success i->nl_family holds the resolved nl80211 family id. */
+static struct nl_sock *iface_nl(struct iface *i)
 {
-	s->sk = nl_socket_alloc();
-	if (!s->sk) {
+	if (i->nl) return i->nl;
+
+	struct nl_sock *sk = nl_socket_alloc();
+	if (!sk) {
 		log_err("nl_socket_alloc failed");
-		return -1;
+		return NULL;
 	}
-	if (genl_connect(s->sk) < 0) {
+	if (genl_connect(sk) < 0) {
 		log_err("genl_connect failed");
-		nl_socket_free(s->sk);
-		s->sk = NULL;
-		return -1;
+		nl_socket_free(sk);
+		return NULL;
 	}
-	s->family_id = genl_ctrl_resolve(s->sk, "nl80211");
-	if (s->family_id < 0) {
+	int fam = genl_ctrl_resolve(sk, "nl80211");
+	if (fam < 0) {
 		log_err("nl80211 family not found (wireless drivers loaded?)");
-		nl_socket_free(s->sk);
-		s->sk = NULL;
-		return -1;
+		nl_socket_free(sk);
+		return NULL;
 	}
-	return 0;
+	i->nl        = sk;
+	i->nl_family = fam;
+	return sk;
 }
 
-static void nlsess_close(struct nl_session *s)
+void iface_close(struct iface *i)
 {
-	if (s->sk) {
-		nl_socket_free(s->sk);
-		s->sk = NULL;
+	if (i->nl) {
+		nl_socket_free((struct nl_sock *)i->nl);
+		i->nl        = NULL;
+		i->nl_family = 0;
 	}
 }
 
@@ -89,8 +91,8 @@ static int nl_err_cb(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg)
 }
 
 /* Send msg, run the loop until the kernel acks (or errors). Returns 0 on
- * success, -errno on failure. */
-static int nl_send_and_wait(struct nl_session *s, struct nl_msg *msg,
+ * success, -errno on failure. Consumes (frees) msg. */
+static int nl_send_and_wait(struct nl_sock *sk, struct nl_msg *msg,
                             nl_recvmsg_msg_cb_t parse_cb, void *parse_arg)
 {
 	int err = 1;     /* sentinel: -1 result == kernel error */
@@ -108,7 +110,7 @@ static int nl_send_and_wait(struct nl_session *s, struct nl_msg *msg,
 	nl_cb_set(cb, NL_CB_ACK,    NL_CB_CUSTOM, nl_ack_cb,    &done);
 	nl_cb_err(cb,             NL_CB_CUSTOM, nl_err_cb,    &err);
 
-	int rc = nl_send_auto(s->sk, msg);
+	int rc = nl_send_auto(sk, msg);
 	nlmsg_free(msg);
 	if (rc < 0) {
 		log_err("nl_send_auto: %s", nl_geterror(rc));
@@ -117,7 +119,7 @@ static int nl_send_and_wait(struct nl_session *s, struct nl_msg *msg,
 	}
 
 	while (!done && err > 0) {
-		int recv_rc = nl_recvmsgs(s->sk, cb);
+		int recv_rc = nl_recvmsgs(sk, cb);
 		if (recv_rc < 0) {
 			/* Treat any recv error as fatal for this transaction —
 			 * the alternative is to spin forever. The next iface
@@ -172,6 +174,9 @@ static int parse_get_interface(struct nl_msg *msg, void *arg)
 
 int iface_open(struct iface *i, const char *name)
 {
+	/* Free any session cached from a previous target before we wipe the
+	 * struct — handle_iface_set re-opens onto a new interface. */
+	iface_close(i);
 	memset(i, 0, sizeof *i);
 
 	if (!name || !*name || strlen(name) >= sizeof i->name) {
@@ -186,25 +191,26 @@ int iface_open(struct iface *i, const char *name)
 		return -1;
 	}
 
-	struct nl_session s = {0};
-	if (nlsess_open(&s) < 0) return -1;
+	struct nl_sock *sk = iface_nl(i);
+	if (!sk) return -1;
 
 	struct nl_msg *msg = nlmsg_alloc();
-	if (!msg) { nlsess_close(&s); return -1; }
+	if (!msg) { iface_close(i); return -1; }
 
-	genlmsg_put(msg, 0, 0, s.family_id, 0, 0, NL80211_CMD_GET_INTERFACE, 0);
+	genlmsg_put(msg, 0, 0, i->nl_family, 0, 0, NL80211_CMD_GET_INTERFACE, 0);
 	nla_put_u32(msg, NL80211_ATTR_IFINDEX, (uint32_t)i->ifindex);
 
 	struct get_iface_ctx ctx = { .mode = IFACE_MODE_UNKNOWN };
-	int rc = nl_send_and_wait(&s, msg, parse_get_interface, &ctx);
-	nlsess_close(&s);
+	int rc = nl_send_and_wait(sk, msg, parse_get_interface, &ctx);
 
 	if (rc < 0) {
 		log_err("nl80211 GET_INTERFACE on %s failed: %d", name, rc);
+		iface_close(i);
 		return -1;
 	}
 	if (!ctx.have_wiphy) {
 		log_err("nl80211 reply for %s lacked wiphy", name);
+		iface_close(i);
 		return -1;
 	}
 
@@ -213,13 +219,13 @@ int iface_open(struct iface *i, const char *name)
 
 	/* Snapshot the hardware MAC via SIOCGIFHWADDR — needed for active
 	 * association attacks where we use our own MAC as source address. */
-	int sk = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-	if (sk >= 0) {
+	int hwfd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (hwfd >= 0) {
 		struct ifreq ifr = {0};
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
-		if (ioctl(sk, SIOCGIFHWADDR, &ifr) == 0)
+		if (ioctl(hwfd, SIOCGIFHWADDR, &ifr) == 0)
 			memcpy(i->mac, ifr.ifr_hwaddr.sa_data, 6);
-		close(sk);
+		close(hwfd);
 	}
 
 	log_info("iface %s: ifindex=%d wiphy=%u mode=%s mac=%02x:%02x:%02x:%02x:%02x:%02x",
@@ -310,18 +316,17 @@ int iface_link_down(struct iface *i) { return set_link_flag(i, 0); }
 
 static void iface_disable_power_save(struct iface *i)
 {
-	struct nl_session s = {0};
-	if (nlsess_open(&s) < 0) return;
+	struct nl_sock *sk = iface_nl(i);
+	if (!sk) return;
 
 	struct nl_msg *msg = nlmsg_alloc();
-	if (!msg) { nlsess_close(&s); return; }
+	if (!msg) return;
 
-	genlmsg_put(msg, 0, 0, s.family_id, 0, 0, NL80211_CMD_SET_POWER_SAVE, 0);
+	genlmsg_put(msg, 0, 0, i->nl_family, 0, 0, NL80211_CMD_SET_POWER_SAVE, 0);
 	nla_put_u32(msg, NL80211_ATTR_IFINDEX,  (uint32_t)i->ifindex);
 	nla_put_u32(msg, NL80211_ATTR_PS_STATE, NL80211_PS_DISABLED);
 
-	int rc = nl_send_and_wait(&s, msg, NULL, NULL);
-	nlsess_close(&s);
+	int rc = nl_send_and_wait(sk, msg, NULL, NULL);
 
 	if (rc < 0)
 		log_debug("iface %s: power_save disable returned %d (ok for monitor)",
@@ -355,18 +360,17 @@ int iface_set_mode(struct iface *i, enum iface_mode mode)
 	if (iface_link_down(i) < 0)
 		return -1;
 
-	struct nl_session s = {0};
-	if (nlsess_open(&s) < 0) return -1;
+	struct nl_sock *sk = iface_nl(i);
+	if (!sk) return -1;
 
 	struct nl_msg *msg = nlmsg_alloc();
-	if (!msg) { nlsess_close(&s); return -1; }
+	if (!msg) return -1;
 
-	genlmsg_put(msg, 0, 0, s.family_id, 0, 0, NL80211_CMD_SET_INTERFACE, 0);
+	genlmsg_put(msg, 0, 0, i->nl_family, 0, 0, NL80211_CMD_SET_INTERFACE, 0);
 	nla_put_u32(msg, NL80211_ATTR_IFINDEX, (uint32_t)i->ifindex);
 	nla_put_u32(msg, NL80211_ATTR_IFTYPE,  iftype);
 
-	int rc = nl_send_and_wait(&s, msg, NULL, NULL);
-	nlsess_close(&s);
+	int rc = nl_send_and_wait(sk, msg, NULL, NULL);
 
 	if (rc < 0) {
 		log_err("nl80211 SET_INTERFACE on %s -> %s failed: %d",
@@ -400,19 +404,21 @@ int iface_set_channel(struct iface *i, int channel)
 		return -1;
 	}
 
-	struct nl_session s = {0};
-	if (nlsess_open(&s) < 0) return -1;
+	struct nl_sock *sk = iface_nl(i);
+	if (!sk) return -1;
 
 	struct nl_msg *msg = nlmsg_alloc();
-	if (!msg) { nlsess_close(&s); return -1; }
+	if (!msg) return -1;
 
-	genlmsg_put(msg, 0, 0, s.family_id, 0, 0, NL80211_CMD_SET_WIPHY, 0);
+	/* Kept as SET_WIPHY (not SET_CHANNEL) deliberately — this is the form
+	 * brcmfmac reliably honours in monitor mode; the win here is reusing
+	 * the cached session, not changing the command. */
+	genlmsg_put(msg, 0, 0, i->nl_family, 0, 0, NL80211_CMD_SET_WIPHY, 0);
 	nla_put_u32(msg, NL80211_ATTR_IFINDEX,            (uint32_t)i->ifindex);
 	nla_put_u32(msg, NL80211_ATTR_WIPHY_FREQ,         (uint32_t)freq);
 	nla_put_u32(msg, NL80211_ATTR_WIPHY_CHANNEL_TYPE, NL80211_CHAN_NO_HT);
 
-	int rc = nl_send_and_wait(&s, msg, NULL, NULL);
-	nlsess_close(&s);
+	int rc = nl_send_and_wait(sk, msg, NULL, NULL);
 
 	if (rc < 0) {
 		log_err("nl80211 SET_WIPHY freq=%d on %s failed: %d",
