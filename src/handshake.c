@@ -25,6 +25,7 @@ struct hs_pair {
 	int      have_pmkid;
 	int      emitted_handshake;
 	int      emitted_pmkid;
+	int      done_emitted;        /* HS_EVT_DONE fired + .22000 written */
 	time_t   first_seen;
 	time_t   last_seen;
 	char     hash22000_path[256]; /* written by write_hash22000 */
@@ -202,10 +203,36 @@ static void ensure_pcap(struct handshake *h, struct hs_pair *p)
 	}
 }
 
+/* Write the .22000 and fire HS_EVT_DONE as soon as we hold a complete,
+ * wpa-sec-uploadable 4-way (ANonce + M2) — don't wait for the pair to go
+ * stale. A device that keeps re-keying refreshes last_seen on every EAPOL
+ * frame, so close_pair might not run for minutes; without this the
+ * handshake sits on disk unannounced. Idempotent via done_emitted.
+ *
+ * Finalize only on the 4-way, NOT on PMKID: the PMKID rides in M1, so
+ * firing at PMKID time would pre-empt the M2/M3/M4 about to arrive.
+ * PMKID-only pairs are finalized by close_pair instead (a lone M1 doesn't
+ * keep the pair alive, so it goes stale quickly). The pcap is left OPEN so
+ * late frames keep appending — closing it here would let ensure_pcap
+ * reopen (and truncate) it on the next frame. */
+static void finalize_pair(struct handshake *h, struct hs_pair *p)
+{
+	if (p->done_emitted) return;
+	if (!(p->have_anonce && p->have_m2)) return;
+	write_hash22000(h, p);
+	p->done_emitted = 1;
+	log_info("handshake: finalized 4-way for %02x:..:%02x → %02x:..:%02x (eager)",
+	         p->ap_bssid[0], p->ap_bssid[5], p->sta_mac[0], p->sta_mac[5]);
+	payload_emit(h, HS_EVT_DONE, p);
+}
+
 static void close_pair(struct handshake *h, struct hs_pair *p)
 {
 	if (!p->in_use) return;
-	write_hash22000(h, p);
+	/* If we already finalized eagerly, don't rewrite the .22000 or re-emit
+	 * DONE — just dispose of the pcap and the slot below. */
+	if (!p->done_emitted)
+		write_hash22000(h, p);
 
 	/* Two distinct gates, with different semantics:
 	 *
@@ -240,7 +267,9 @@ static void close_pair(struct handshake *h, struct hs_pair *p)
 			p->pcap_path[0] = '\0';
 		}
 	}
-	payload_emit(h, HS_EVT_DONE, p);
+	/* Only emit DONE here if we didn't already finalize eagerly. */
+	if (!p->done_emitted)
+		payload_emit(h, HS_EVT_DONE, p);
 	memset(p, 0, sizeof *p);
 	h->n_pairs--;
 }
@@ -405,6 +434,10 @@ void handshake_observe(struct handshake *h,
 		         ap[0], ap[5], sta[0], sta[5], p->msg_bitmap);
 		payload_emit(h, HS_EVT_HANDSHAKE, p);
 	}
+
+	/* Write + announce as soon as we hold a complete 4-way, rather than
+	 * waiting for the stale timeout (a re-keying STA may never go stale). */
+	finalize_pair(h, p);
 }
 
 void handshake_tick(struct handshake *h, time_t now)

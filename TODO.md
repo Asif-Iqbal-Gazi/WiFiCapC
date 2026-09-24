@@ -111,15 +111,16 @@ then Tier 2 (perf), then Tier 3 (features).
       inherently small per-record; an iterator is overkill now.)
 - Files: `src/table.c`, `include/table.h`, `src/handshake.c`.
 
-### R5 — write the handshake artifacts as soon as a pair is complete
-- [ ] Today `.22000` / `.pcap` are only written in `close_pair`, i.e. on
-      the 30 s stale timeout. A device that keeps re-handshaking (busy
-      STA) refreshes `last_seen` and never triggers the write, so a
-      captured handshake sits unwritten for minutes. Emit + write the
-      moment `have_pmkid || (have_anonce && have_m2)` first becomes true
-      (guard with an `emitted_done`/`written` flag so close doesn't
-      double-write). Faster handoff to wpa-sec, closes the "never
-      finalized" gap.
+### R5 — write the handshake artifacts as soon as a pair is complete ✅ v0.6.15
+- [x] `finalize_pair()` writes the `.22000` + fires `handshake.done` the
+      moment a complete 4-way (`have_anonce && have_m2`) is held, called
+      from `handshake_observe`; `done_emitted` guards `close_pair` from
+      rewriting/re-emitting. Deliberately finalizes on the 4-way only,
+      not on PMKID (PMKID rides in M1 — finalizing there would pre-empt
+      the M2/M3/M4 landing microseconds later); PMKID-only pairs still
+      finalize at stale-close, which is fine since a lone M1 doesn't keep
+      the pair alive. The pcap is left open after eager finalize so late
+      frames keep appending (closing would let ensure_pcap reopen+truncate).
 - Files: `src/handshake.c`.
 
 ### P2 — smarter autonomous attack scheduling
