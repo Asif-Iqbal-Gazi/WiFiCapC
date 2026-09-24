@@ -100,16 +100,16 @@ then Tier 2 (perf), then Tier 3 (features).
       is an independent risk the perf win doesn't need.
 - Files: `src/iface.c`, `include/iface.h`, `src/main.c`.
 
-### P3 — stop snapshotting full ap_records onto the stack
-- [ ] `sizeof(struct ap_record)` is **632 bytes** (it carries a 512-byte
-      cached beacon). `on_attack_timer` copies `aps[256]` (158 KB) **and**
-      `stas[1024]` (90 KB) onto the stack every 5 s, and `handle_list_stas`
-      puts ~152 KB on the stack — all just to read a few fields. Wasteful
-      memcpy + big transient stack frames.
-- Fix: a lightweight snapshot struct (bssid/ssid/channel/rssi) or an
-      in-place `table_for_each_*` iterator with a callback. Keeps the hot
-      attack path and list handlers off 150–250 KB stack spikes.
-- Files: `src/table.c`, `include/table.h`, `src/main.c`.
+### P3 — stop snapshotting full ap_records onto the stack ✅ v0.6.14
+- [x] Moved the 512-byte cached beacon out of `ap_record` into a parallel
+      `beacons[]` array in `struct table` (reset on slot (re)alloc /
+      eviction / clear; fetched via new `table_ap_beacon()`). `ap_record`
+      632 → **112 bytes**: `list_aps` snapshot 158 → 28 KB, attack-timer
+      snapshot 248 → 116 KB. No JSON/IPC change (beacon was never emitted).
+      Total table heap unchanged — the blob just moved off the per-record
+      struct so snapshots don't drag it. (The residual STA-array copy is
+      inherently small per-record; an iterator is overkill now.)
+- Files: `src/table.c`, `include/table.h`, `src/handshake.c`.
 
 ### R5 — write the handshake artifacts as soon as a pair is complete
 - [ ] Today `.22000` / `.pcap` are only written in `close_pair`, i.e. on

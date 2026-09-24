@@ -35,12 +35,10 @@ struct ap_record {
 	time_t   last_seen;
 	uint64_t frames;
 	int      in_use;
-
-	/* most recent beacon as captured (radiotap header + 802.11 frame).
-	 * Used by the handshake module so each per-pair pcap starts with a
-	 * beacon — hcxpcapngtool needs the SSID + RSN IE to build the hash. */
-	uint8_t  last_beacon[TABLE_BEACON_MAX];
-	size_t   last_beacon_len;
+	/* The most-recent beacon is cached out-of-band (see table_cache_beacon /
+	 * table_ap_beacon), NOT inline here — keeping the 512-byte blob out of
+	 * ap_record makes snapshots (list_aps, the attack engine) ~5x cheaper
+	 * to copy on the Zero 2. */
 };
 
 struct sta_record {
@@ -87,11 +85,20 @@ void table_observe_sta(struct table *t, const struct dot11_info *d,
 
 /*
  * Cache the most recent beacon raw bytes for a known BSSID. The beacon is
- * stored as captured (radiotap + 802.11). Truncated to TABLE_BEACON_MAX.
- * No-op if BSSID is unknown.
+ * stored as captured (radiotap + 802.11), out-of-band from ap_record.
+ * Truncated to TABLE_BEACON_MAX. No-op if BSSID is unknown.
  */
 void table_cache_beacon(struct table *t, const uint8_t bssid[6],
                         const uint8_t *frame, size_t len);
+
+/*
+ * Fetch the cached beacon for a BSSID. On success returns its length and
+ * points *out at the internal buffer (valid until the next table mutation);
+ * returns 0 (and leaves *out untouched) if the BSSID is unknown or has no
+ * cached beacon.
+ */
+size_t table_ap_beacon(const struct table *t, const uint8_t bssid[6],
+                       const uint8_t **out);
 
 /* Look up by BSSID; returns NULL if not present. */
 const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6]);

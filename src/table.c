@@ -5,8 +5,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Beacons are kept parallel to aps[] (same index) rather than inline in
+ * ap_record, so snapshotting ap_records stays cheap. Slot i's beacon is
+ * valid only while aps[i].in_use and belongs to the current occupant —
+ * reset on (re)allocation and eviction. */
+struct ap_beacon {
+	uint8_t buf[TABLE_BEACON_MAX];
+	size_t  len;
+};
+
 struct table {
 	struct ap_record  aps [TABLE_MAX_APS];
+	struct ap_beacon  beacons[TABLE_MAX_APS];
 	struct sta_record stas[TABLE_MAX_STAS];
 	int               ap_ttl;
 	int               sta_ttl;
@@ -90,6 +100,7 @@ void table_observe_ap(struct table *t, const struct dot11_info *d,
 		memcpy(ap->bssid, d->bssid, 6);
 		ap->first_seen = now;
 		ap->in_use     = 1;
+		t->beacons[ap - t->aps].len = 0;   /* stale beacon from prior occupant */
 		t->n_aps++;
 	}
 
@@ -162,6 +173,7 @@ void table_evict_expired(struct table *t, time_t now)
 			if (t->emit)
 				t->emit(TABLE_EVT_AP_LOST, ap, NULL, t->user);
 			ap->in_use = 0;
+			t->beacons[i].len = 0;
 			t->n_aps--;
 		}
 	}
@@ -179,8 +191,9 @@ void table_evict_expired(struct table *t, time_t now)
 
 void table_clear(struct table *t)
 {
-	memset(t->aps,  0, sizeof t->aps);
-	memset(t->stas, 0, sizeof t->stas);
+	memset(t->aps,     0, sizeof t->aps);
+	memset(t->beacons, 0, sizeof t->beacons);
+	memset(t->stas,    0, sizeof t->stas);
 	t->n_aps  = 0;
 	t->n_stas = 0;
 }
@@ -216,8 +229,20 @@ void table_cache_beacon(struct table *t, const uint8_t bssid[6],
 	struct ap_record *ap = find_ap(t, bssid);
 	if (!ap) return;
 	if (len > TABLE_BEACON_MAX) len = TABLE_BEACON_MAX;
-	memcpy(ap->last_beacon, frame, len);
-	ap->last_beacon_len = len;
+	struct ap_beacon *b = &t->beacons[ap - t->aps];
+	memcpy(b->buf, frame, len);
+	b->len = len;
+}
+
+size_t table_ap_beacon(const struct table *t, const uint8_t bssid[6],
+                       const uint8_t **out)
+{
+	struct ap_record *ap = find_ap((struct table *)t, bssid);
+	if (!ap) return 0;
+	const struct ap_beacon *b = &t->beacons[ap - t->aps];
+	if (b->len == 0) return 0;
+	if (out) *out = b->buf;
+	return b->len;
 }
 
 const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6])

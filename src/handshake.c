@@ -193,9 +193,10 @@ static void ensure_pcap(struct handshake *h, struct hs_pair *p)
 		return;
 	}
 	if (h->table) {
-		const struct ap_record *apr = table_find_ap(h->table, p->ap_bssid);
-		if (apr && apr->last_beacon_len > 0) {
-			(void)pcap_write(p->pcap, apr->last_beacon, apr->last_beacon_len);
+		const uint8_t *beacon = NULL;
+		size_t beacon_len = table_ap_beacon(h->table, p->ap_bssid, &beacon);
+		if (beacon_len > 0) {
+			(void)pcap_write(p->pcap, beacon, beacon_len);
 			p->beacon_written = 1;
 		}
 	}
