@@ -140,6 +140,37 @@ then Tier 2 (perf), then Tier 3 (features).
 
 # Tier 3 — features / larger
 
+### R6 — escalate self-heal beyond the modprobe cycle (SDIO backplane wedge)
+- [ ] **Field-observed 2026-09-24 on the Zero 2 W (v0.6.16):** the BCM43430
+      wedged at the SDIO bus level — `brcmf_sdio_dpc: sdio ctrlframe tx
+      failed err=-84` → `failed backplane access over SDIO, halting
+      operation` → `brcmf_attach failed`. `wlan0` disappeared entirely and
+      the daemon logged `iface_open: <iface>: No such device` for ~5 hours.
+      The existing self-heal (rfkill unblock + power_save off + `wificapc-prep`
+      modprobe cycle, v0.6.2–0.6.4) **cannot** recover this: a `modprobe -r/`
+      `modprobe brcmfmac` re-loads the module but the chip re-fails `attach`
+      every time. Manually confirmed insufficient: module reload ✗; an SDIO
+      host unbind/rebind power-cycle (`.../mmc-bcm2835/{unbind,bind}` on the
+      `3f300000.mmcnr` host) re-enumerated the card but brcmfmac would not
+      re-attach live ✗. **Only a reboot cleared it.**
+- Fix: add an escalation ladder to the wedge detector (see
+      [iface-and-driver-health.md](docs/IDEAS/iface-and-driver-health.md)).
+      Detect the wedge signature — N consecutive `iface_open`/`SET_WIPHY`
+      failures, or repeated `brcmf_attach failed` / `err=-84` in the kernel
+      ring — and escalate in stages with cooldowns and a persisted attempt
+      counter (survive across daemon restarts; never boot-loop):
+      (1) modprobe cycle → (2) SDIO host unbind/rebind power-cycle →
+      (3) `systemctl reboot` as last resort, rate-limited (e.g. ≤1/hour,
+      backoff, give up after M reboots). The reboot rung is the agent's or a
+      dedicated recovery unit's job, not the passive daemon — decide owner.
+- Also seen: `wificapc-prep.service` was **not-found** on the running image
+      (self-heal prep never installed there) — verify the stage3 install and
+      that the unit is enabled. And the brcmfmac monitor invariant: `wlan0`
+      (managed) must be **down** or the monitor vif can't tune the radio
+      (`SET_WIPHY … -25/Object busy`, 0 RX) — document/enforce it.
+- Files: `src/iface.c`, `src/chanhop.c`, `systemd/`, pwnagotc recovery unit,
+      `docs/IDEAS/iface-and-driver-health.md`.
+
 ### R3 — dynamic capacity for the handshake pair table
 - [ ] `HS_MAX_PAIRS = 64` fixed array drops pairs in dense environments
       (`pair table full, dropping`). Grow dynamically (cap ~256) or use a
