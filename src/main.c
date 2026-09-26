@@ -25,7 +25,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.16"
+#define WIFICAPC_VER     "0.6.17"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -389,6 +389,10 @@ static int emit_ap_event(struct app *a, const char *tag, const struct ap_record 
 		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ssid", ap->ssid)) < 0) return -1;
 		pos = (size_t)r;
 	}
+	if (ap->vendor[0]) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "vendor", ap->vendor)) < 0) return -1;
+		pos = (size_t)r;
+	}
 	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", ap->channel)) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "rssi", ap->rssi)) < 0) return -1;
@@ -414,6 +418,10 @@ static int emit_sta_event(struct app *a, const char *tag, const struct sta_recor
 	if (sta->have_ap) {
 		dot11_mac_str(sta->ap_bssid, ap);
 		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ap_bssid", ap)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if (sta->vendor[0]) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "vendor", sta->vendor)) < 0) return -1;
 		pos = (size_t)r;
 	}
 	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", sta->channel)) < 0) return -1;

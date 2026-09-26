@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "table.h"
 #include "log.h"
+#include "oui.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -98,6 +99,11 @@ void table_observe_ap(struct table *t, const struct dot11_info *d,
 		}
 		memset(ap, 0, sizeof *ap);
 		memcpy(ap->bssid, d->bssid, 6);
+		const char *vend = oui_lookup(ap->bssid);
+		if (vend) {
+			strncpy(ap->vendor, vend, TABLE_VENDOR_MAX - 1);
+			ap->vendor[TABLE_VENDOR_MAX - 1] = '\0';
+		}
 		ap->first_seen = now;
 		ap->in_use     = 1;
 		t->beacons[ap - t->aps].len = 0;   /* stale beacon from prior occupant */
@@ -146,6 +152,11 @@ void table_observe_sta(struct table *t, const struct dot11_info *d,
 		}
 		memset(sta, 0, sizeof *sta);
 		memcpy(sta->mac, sta_mac, 6);
+		const char *vend = oui_lookup(sta->mac);
+		if (vend) {
+			strncpy(sta->vendor, vend, TABLE_VENDOR_MAX - 1);
+			sta->vendor[TABLE_VENDOR_MAX - 1] = '\0';
+		}
 		sta->first_seen = now;
 		sta->in_use     = 1;
 		t->n_stas++;

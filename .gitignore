@@ -5,6 +5,7 @@
 /wificapcctl
 /test_parsers
 /test_eapol
+/test_oui
 *.pcapng
 *.22000
 *.swp
