@@ -25,7 +25,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.6.17"
+#define WIFICAPC_VER     "0.6.18"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -46,6 +46,9 @@ struct app {
 	struct handshake  *hs;
 	struct inject     *inject;
 	int                attack_fd;
+	int                health_fd;        /* rx-silence watchdog timer */
+	uint64_t           health_frames;    /* capture frames_total at last check */
+	time_t             health_progress;  /* last time frames advanced / hop was off */
 	int                mac_rand;   /* --mac-rand applied to inject when created */
 	time_t             started;
 };
@@ -1237,6 +1240,70 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 	return 0;
 }
 
+/* Capture-health watchdog. On brcmfmac the radio can come up (or wedge) in a
+ * state where channel-sets fail and AF_PACKET delivers nothing, and it does
+ * not recover without a driver re-init — which is the launcher's job, not the
+ * daemon's. If we are actively hopping+capturing yet see zero new frames for
+ * RX_SILENCE_SEC, the radio is not receiving. Exit so systemd re-runs
+ * wificapc-launcher (modprobe cycle + monitor bring-up). In any populated
+ * 2.4 GHz area a healthy radio sees beacons within a second, so this length of
+ * silence is a wedge, not a quiet channel. */
+#define RX_SILENCE_SEC     45
+#define HEALTH_CHECK_SEC    5
+
+static void on_health_timer(int fd, uint32_t events, void *user)
+{
+	(void)events;
+	struct app *a = user;
+	uint64_t exp;
+	if (read(fd, &exp, sizeof exp) != (ssize_t)sizeof exp) return;
+
+	time_t now = time(NULL);
+	int hopping   = a->hopper  && chanhop_is_running(a->hopper);
+	int capturing = a->capture && capture_is_running(a->capture);
+
+	/* Only meaningful while actively hopping+capturing; otherwise keep the
+	 * silence window reset so it starts fresh once hopping resumes. */
+	if (!hopping || !capturing) {
+		a->health_frames   = a->capture ? capture_frames_total(a->capture) : 0;
+		a->health_progress = now;
+		return;
+	}
+
+	uint64_t cur = capture_frames_total(a->capture);
+	if (cur != a->health_frames) {           /* frames advancing → healthy */
+		a->health_frames   = cur;
+		a->health_progress = now;
+		return;
+	}
+
+	if (now - a->health_progress >= RX_SILENCE_SEC) {
+		log_err("capture-health: hopping but 0 frames for %llds — radio wedged; "
+		        "exiting for supervisor to re-init the interface",
+		        (long long)(now - a->health_progress));
+		exit(3);
+	}
+}
+
+static int start_health_timer(struct app *a)
+{
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (fd < 0) { log_err("timerfd_create(health): %s", strerror(errno)); return -1; }
+	struct itimerspec its = {
+		.it_interval = { .tv_sec = HEALTH_CHECK_SEC },
+		.it_value    = { .tv_sec = HEALTH_CHECK_SEC },
+	};
+	timerfd_settime(fd, 0, &its, NULL);
+	if (ipc_add_fd(a->ipc, fd, EPOLLIN, on_health_timer, a) < 0) {
+		log_err("start_health_timer: ipc_add_fd failed");
+		close(fd);
+		return -1;
+	}
+	a->health_frames   = 0;
+	a->health_progress = time(NULL);
+	return fd;
+}
+
 int main(int argc, char **argv)
 {
 	struct opts o = {
@@ -1268,6 +1335,7 @@ int main(int argc, char **argv)
 	struct app a = {0};
 	a.started    = time(NULL);
 	a.attack_fd  = -1;
+	a.health_fd  = -1;
 	a.mac_rand   = o.mac_rand;
 
 	a.ipc = ipc_create(o.sock_path, o.sock_mode);
@@ -1293,9 +1361,12 @@ int main(int argc, char **argv)
 		}
 	}
 
+	a.health_fd = start_health_timer(&a);
+
 	int run_rc = ipc_run(a.ipc);
 
 	log_info("shutting down");
+	if (a.health_fd >= 0) { ipc_remove_fd(a.ipc, a.health_fd); close(a.health_fd); }
 	if (a.attack_fd >= 0) { ipc_remove_fd(a.ipc, a.attack_fd); close(a.attack_fd); }
 	if (a.inject)  inject_destroy(a.inject);
 	if (a.capture) capture_destroy(a.capture);

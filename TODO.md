@@ -140,6 +140,21 @@ then Tier 2 (perf), then Tier 3 (features).
 
 # Tier 3 — features / larger
 
+### R7 — capture-health rx-silence watchdog ✅ v0.6.18
+- [x] **Field-observed 2026-09-27 on a fresh flash:** the radio can come up
+      wedged — `SET_WIPHY … failed: -7` on every channel, chanhop blacklists
+      them all, AF_PACKET delivers 0 frames, and it never recovers on its own
+      (needs the launcher's modprobe cycle). Only a `systemctl restart
+      wificapc` (which re-runs `wificapc-launcher`) fixed it. Added a health
+      timer (`HEALTH_CHECK_SEC=5`): while hopping+capturing, if `frames_total`
+      shows **0 new frames for `RX_SILENCE_SEC=45`s**, log and `exit(3)` so
+      systemd (`Restart=always`) re-runs the launcher and re-inits the radio.
+      A healthy radio sees beacons within ~1 s in any populated 2.4 GHz area,
+      so this silence is a wedge, not a quiet channel. Detect-and-delegate:
+      the daemon never touches the driver itself. Implements the "rx_silent"
+      detector from `docs/IDEAS/iface-and-driver-health.md` Phase 1.
+- Files: `src/main.c` (`on_health_timer`/`start_health_timer`).
+
 ### R6 — escalate self-heal beyond the modprobe cycle (SDIO backplane wedge)
 - [ ] **Field-observed 2026-09-24 on the Zero 2 W (v0.6.16):** the BCM43430
       wedged at the SDIO bus level — `brcmf_sdio_dpc: sdio ctrlframe tx
