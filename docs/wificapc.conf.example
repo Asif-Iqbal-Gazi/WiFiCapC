@@ -1,0 +1,17 @@
+# Example wificapc config file — pass with: wificapc -c /etc/wificapc.conf
+# Keys mirror the long CLI options (dashes -> underscores).
+# CLI flags override anything set here.
+
+# socket        = /run/wificapc.sock
+# mode          = 0660
+# iface         = wlan0
+# hs_dir        = /etc/pwnagotchi/handshakes
+# channels      = 1,6,11
+# hop_interval  = 250
+# attack        = false
+# attack_interval = 5000
+# mac_rand      = false
+# pmkid_only    = false
+# state_file    = /tmp/wificapc/state.bin
+# state_max_age = 600
+# log_format    = text

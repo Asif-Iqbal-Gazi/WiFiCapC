@@ -25,6 +25,19 @@ JSON protocol \(em see
 .SH OPTIONS
 .SS General
 .TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Read options from a
+.I key = value
+config file before applying command-line flags (so the CLI overrides the
+file). Keys mirror the long option names with dashes as underscores:
+.BR socket ", " mode ", " foreground ", " debug ", " iface ", " hs_dir ", "
+.BR channels ", " hop_interval ", " attack ", " attack_interval ", "
+.BR mac_rand ", " pmkid_only ", " state_file ", " state_max_age ", "
+.BR log_format .
+Blank lines and
+.B #
+comments are ignored.
+.TP
 .BR \-s ", " \-\-socket " " \fIPATH\fR
 Unix socket path (default
 .BR /run/wificapc.sock ).

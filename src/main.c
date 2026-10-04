@@ -1263,6 +1263,8 @@ static void usage(FILE *f, const char *argv0)
 	    "wificapc " WIFICAPC_VER " — native 802.11 capture daemon\n"
 	    "\n"
 	    "Usage: %s [options]\n"
+	    "  -c, --config   PATH    Read options from a key=value config file\n"
+	    "                         (CLI flags override the file)\n"
 	    "  -s, --socket   PATH    Unix socket path (default: " DEFAULT_SOCK ")\n"
 	    "  -m, --mode     OCTAL   Socket file mode (default: 0660)\n"
 	    "  -f, --foreground       Stay in foreground, log to stderr\n"
@@ -1290,6 +1292,73 @@ static void usage(FILE *f, const char *argv0)
 	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
+/* Trim leading/trailing ASCII whitespace in place; returns the start. */
+static char *trim(char *s)
+{
+	while (*s == ' ' || *s == '\t') s++;
+	char *end = s + strlen(s);
+	while (end > s && (end[-1] == ' ' || end[-1] == '\t' ||
+	                   end[-1] == '\n' || end[-1] == '\r'))
+		*--end = '\0';
+	return s;
+}
+
+static int cfg_bool(const char *v)
+{
+	return (!strcmp(v, "1") || !strcasecmp(v, "true") ||
+	        !strcasecmp(v, "yes") || !strcasecmp(v, "on"));
+}
+
+/*
+ * X3: load `key = value` lines into `o` (defaults < config < CLI, since the
+ * caller applies this before getopt). Blank lines and `#` comments are
+ * ignored. Unknown keys warn but don't abort. String values are strdup'd
+ * (freed only at process exit, which is fine for a once-loaded config).
+ * Returns 0 on success, -1 if the file can't be opened.
+ */
+static int load_config(const char *path, struct opts *o)
+{
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		log_err("config: open %s: %s", path, strerror(errno));
+		return -1;
+	}
+	char line[512];
+	int lineno = 0;
+	while (fgets(line, sizeof line, f)) {
+		lineno++;
+		char *s = trim(line);
+		if (!*s || *s == '#') continue;
+		char *eq = strchr(s, '=');
+		if (!eq) {
+			log_warn("config: %s:%d: no '=', ignoring", path, lineno);
+			continue;
+		}
+		*eq = '\0';
+		char *k = trim(s);
+		char *v = trim(eq + 1);
+
+		if      (!strcmp(k, "socket"))          o->sock_path = strdup(v);
+		else if (!strcmp(k, "mode"))            o->sock_mode = (mode_t)strtol(v, NULL, 8);
+		else if (!strcmp(k, "foreground"))      o->foreground = cfg_bool(v);
+		else if (!strcmp(k, "debug"))           o->debug = cfg_bool(v);
+		else if (!strcmp(k, "iface"))           o->iface = strdup(v);
+		else if (!strcmp(k, "hs_dir"))          o->hs_dir = strdup(v);
+		else if (!strcmp(k, "channels"))        o->n_channels = parse_channels(v, o->channels, CHANHOP_MAX_CHANNELS);
+		else if (!strcmp(k, "hop_interval"))    o->hop_interval_ms = atoi(v);
+		else if (!strcmp(k, "attack"))          o->attack = cfg_bool(v);
+		else if (!strcmp(k, "attack_interval")) o->attack_interval_ms = atoi(v);
+		else if (!strcmp(k, "mac_rand"))        o->mac_rand = cfg_bool(v);
+		else if (!strcmp(k, "pmkid_only"))      o->pmkid_only = cfg_bool(v);
+		else if (!strcmp(k, "state_file"))      o->state_file = strdup(v);
+		else if (!strcmp(k, "state_max_age"))   o->state_max_age = atoi(v);
+		else if (!strcmp(k, "log_format"))      o->log_format = strdup(v);
+		else log_warn("config: %s:%d: unknown key '%s', ignoring", path, lineno, k);
+	}
+	fclose(f);
+	return 0;
+}
+
 static int parse_opts(int argc, char **argv, struct opts *o)
 {
 	enum {
@@ -1302,6 +1371,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		OPT_LOG_FORMAT,
 	};
 	static const struct option longopts[] = {
+		{ "config",           required_argument, NULL, 'c' },
 		{ "socket",           required_argument, NULL, 's' },
 		{ "mode",             required_argument, NULL, 'm' },
 		{ "foreground",       no_argument,       NULL, 'f' },
@@ -1322,8 +1392,9 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		{ 0 },
 	};
 	int c;
-	while ((c = getopt_long(argc, argv, "s:m:fdhVi:H:C:A", longopts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "c:s:m:fdhVi:H:C:A", longopts, NULL)) != -1) {
 		switch (c) {
+		case 'c': break;  /* handled by the pre-scan in main() */
 		case 's': o->sock_path = optarg; break;
 		case 'm': o->sock_mode = (mode_t)strtol(optarg, NULL, 8); break;
 		case 'f': o->foreground = 1; break;
@@ -1427,6 +1498,17 @@ int main(int argc, char **argv)
 		.state_file          = DEFAULT_STATE_FILE,
 		.state_max_age       = DEFAULT_STATE_MAX_AGE_SEC,
 	};
+
+	/* X3: load --config first so CLI flags (parsed next) override it,
+	 * regardless of flag order. */
+	for (int i = 1; i < argc; i++) {
+		const char *cfg = NULL;
+		if ((!strcmp(argv[i], "-c") || !strcmp(argv[i], "--config")) && i + 1 < argc)
+			cfg = argv[i + 1];
+		else if (!strncmp(argv[i], "--config=", 9))
+			cfg = argv[i] + 9;
+		if (cfg) { load_config(cfg, &o); break; }
+	}
 
 	int rc = parse_opts(argc, argv, &o);
 	if (rc != 0) return rc < 0 ? 1 : 0;
