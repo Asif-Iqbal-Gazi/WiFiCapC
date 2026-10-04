@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Q8: keep the embedded OUI vendor table (src/oui_table.h) fresh against the
+# IEEE MA-L registry. Runs monthly (and on demand); if the regenerated table
+# differs, opens a PR for review rather than pushing to main — so the signed-
+# commit / review workflow stays in the maintainer's hands.
+name: OUI refresh
+
+on:
+  schedule:
+    - cron: "0 4 1 * *"   # 04:00 UTC on the 1st of each month
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download IEEE MA-L registry
+        run: |
+          for url in \
+            "https://standards-oui.ieee.org/oui/oui.csv" \
+            "http://standards-oui.ieee.org/oui/oui.csv"; do
+            echo "trying $url"
+            if curl -fsSL --retry 3 --retry-delay 5 -o oui.csv "$url"; then
+              break
+            fi
+          done
+          test -s oui.csv
+          echo "downloaded $(wc -l < oui.csv) lines"
+
+      - name: Regenerate src/oui_table.h
+        run: |
+          python3 tools/gen_oui.py oui.csv src/oui_table.h
+          rm -f oui.csv
+
+      - name: Sanity-build with the new table
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnl-genl-3-dev libnl-3-dev
+          make && make test
+
+      - name: Open a PR if the table changed
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(oui): refresh IEEE MA-L vendor table"
+          title: "chore(oui): refresh IEEE MA-L vendor table"
+          body: |
+            Automated monthly refresh of `src/oui_table.h` from the IEEE MA-L
+            registry (Q8). Built + tested in CI before this PR was opened.
+
+            Review and merge to pick up new vendor OUIs. No code change — data only.
+          branch: chore/oui-refresh
+          delete-branch: true
+          add-paths: src/oui_table.h
