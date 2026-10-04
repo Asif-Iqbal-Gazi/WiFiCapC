@@ -186,14 +186,14 @@ then Tier 2 (perf), then Tier 3 (features).
 - Files: `src/iface.c`, `src/chanhop.c`, `systemd/`, pwnagotc recovery unit,
       `docs/IDEAS/iface-and-driver-health.md`.
 
-### R3 — dynamic capacity for the handshake pair table
-- [ ] `HS_MAX_PAIRS = 64` fixed array drops pairs in dense environments
+### R3 — dynamic capacity for the handshake pair table ✅ v0.7.0
+- [x] `HS_MAX_PAIRS = 64` fixed array drops pairs in dense environments
       (`pair table full, dropping`). Grow dynamically (cap ~256) or use a
       slab/free-list. On 512 MB, a few hundred × ~1.4 KB pairs is fine.
 - Files: `include/handshake.h`, `src/handshake.c`.
 
-### R1 — persist recon table across daemon restarts
-- [ ] Dump `aps[]`/`stas[]` on shutdown, reload with a configurable
+### R1 — persist recon table across daemon restarts ✅ v0.7.0
+- [x] Dump `aps[]`/`stas[]` on shutdown, reload with a configurable
       max-age. Survives the brcmfmac respawn cycle so the daemon comes
       back aware of the airspace. (pwnagotc D5 handles the reconnect wave.)
 - Files: `src/table.c`, new `src/state.c`.
@@ -236,8 +236,8 @@ then Tier 2 (perf), then Tier 3 (features).
       extension migration.
 - Files: `src/pcap.c` → `src/pcapng.c`, `include/pcap.h`.
 
-### S2 — PMKID-only attack mode
-- [ ] IPC flag / `assoc_pmkid` cmd: send auth+assoc once and return,
+### S2 — PMKID-only attack mode ✅ v0.7.0
+- [x] IPC flag / `assoc_pmkid` cmd: send auth+assoc once and return,
       never wait on the 4-way. Faster target cycling.
 - Files: `src/main.c`, `src/inject.c`.
 
@@ -248,9 +248,10 @@ then Tier 2 (perf), then Tier 3 (features).
 - Files: `src/eapol.c` (or new `src/sae.c`), `src/handshake.c`.
 
 ### X1–X5 — polish
-- [ ] X1 `wificapc(8)` man page · X2 `docs/protocol.md` (canonical
-      command/event reference) · X3 `--config` file parser · X4
-      subscribe/unsubscribe IPC (pwnagotc D6) · X5 `--log-format json`.
+- [x] X1 `wificapc(8)` man page ✅ v0.7.0 · X2 `docs/protocol.md` (canonical
+      command/event reference) ✅ v0.7.0 · X3 `--config` file parser ✅ v0.7.0
+      · X4 subscribe/unsubscribe IPC (pwnagotc D6) ✅ v0.7.0 · X5
+      `--log-format json` ✅ v0.7.0.
 
 ---
 
@@ -265,6 +266,13 @@ then Tier 2 (perf), then Tier 3 (features).
 - **v0.6.7** expanded `stats` (Q4), `delete_handshake` IPC (Q5)
 - **v0.6.9/0.6.10** MAC randomization (S1) + `set_mac_rand` IPC
 - **v0.6.11** chanhop per-channel backoff (R2)
+- **v0.6.12–v0.6.18** radiotap/recon/channel hardening (B1,B2,C1–C3,Q6),
+  nl80211 session + snapshot perf (P1,P3), eager finalize (R5), smarter
+  attack scheduling (P2), OUI vendor lookup (Q1), rx-silence watchdog (R7)
+- **v0.7.0** dynamic handshake-pair table (R3), recon-table persistence
+  (R1), PMKID-only attack mode (S2), and the X-series polish: man page
+  (X1), protocol.md (X2), `--config` file (X3), subscribe/unsubscribe IPC
+  (X4), `--log-format json` (X5)
 
 ## How to use this file
 
