@@ -48,6 +48,7 @@ struct hs_emit_payload {
 	int             rssi;
 	uint8_t         msg_seen_bitmap; /* bit 0=M1, 1=M2, 2=M3, 3=M4 */
 	int             have_pmkid;
+	uint8_t         messagepair;     /* computed WPA*02 messagepair, 0 if none */
 };
 
 typedef void (*hs_emit_fn)(enum hs_event evt,

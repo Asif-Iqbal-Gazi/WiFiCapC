@@ -45,6 +45,14 @@ struct hs_pair {
 	uint8_t  m2_eapol[M2_EAPOL_MAX]; /* M2 EAPOL packet, MIC field zeroed */
 	size_t   m2_eapol_len;
 	int      have_m2;
+	/* Replay counters per message, for MESSAGEPAIR validation (Q7). A clean
+	 * M1+M2 pair shares a counter; M3 is M2's + 1. If we can't confirm the
+	 * relationship we flag the hash so hashcat runs nonce-error-corrections
+	 * instead of silently failing. */
+	uint64_t m1_rc;   int have_m1_rc;
+	uint64_t m2_rc;
+	uint64_t m3_rc;   int have_m3_rc;
+	uint8_t  messagepair;   /* computed WPA*02 messagepair byte */
 };
 
 struct handshake {
@@ -115,6 +123,38 @@ static void hex_encode(char *out, const uint8_t *in, size_t n)
 	out[n*2] = '\0';
 }
 
+static int nonce_is_zero(const uint8_t n[32])
+{
+	for (int i = 0; i < 32; i++) if (n[i]) return 0;
+	return 1;
+}
+
+/*
+ * Compute the hashcat WPA*02 MESSAGEPAIR byte for a pair (Q7, per hcxtools):
+ *   bits 0-2: pair type — 000 = M1+M2 (challenge), 010 = M2+M3 (authorized)
+ *   bit 7   : replaycount NOT verified -> hashcat must run
+ *             nonce-error-corrections rather than trust a clean pairing
+ * A clean WPA2 exchange shares a replay counter across M1/M2, and M3 is
+ * M2's + 1; when we can confirm that we clear bit 7, otherwise we set it so
+ * a Frankenstein pairing (frames from two attempts, same AP+STA, within our
+ * window) is still crackable instead of silently wrong. We don't set the
+ * AP-LESS (bit4) or LE/BE (bit5/6) hints: capture is passive, so the ANONCE
+ * is always the AP's real one.
+ */
+static uint8_t compute_messagepair(const struct hs_pair *p)
+{
+	uint8_t base;
+	int verified;
+	if (p->have_m3_rc) {
+		base     = 0x02;  /* M2 + M3 (authorized — STA proved it holds the PSK) */
+		verified = p->have_m2 && (p->m3_rc == p->m2_rc + 1);
+	} else {
+		base     = 0x00;  /* M1 + M2 (challenge) */
+		verified = p->have_m1_rc && p->have_m2 && (p->m1_rc == p->m2_rc);
+	}
+	return (uint8_t)(base | (verified ? 0x00 : 0x80));
+}
+
 /*
  * Write a hashcat .22000 file for the pair.
  * Writes a PMKID line (WPA*01) if we have the PMKID, and/or an EAPOL line
@@ -157,18 +197,21 @@ static void write_hash22000(struct handshake *h, struct hs_pair *p)
 		        pmkid_hex, ap_hex, sta_hex, ssid_hex);
 	}
 
-	/* WPA*02 — EAPOL line (needs ANonce + M2 with MIC) */
-	if (p->have_anonce && p->have_m2) {
+	/* WPA*02 — EAPOL line (needs ANonce + M2 with MIC). A zeroed ANONCE is
+	 * an unusable capture (hcxtools skips these); don't emit a dead hash. */
+	if (p->have_anonce && p->have_m2 && !nonce_is_zero(p->anonce)) {
 		char mic_hex[33], anonce_hex[65];
 		char eapol_hex[M2_EAPOL_MAX * 2 + 1];
 		hex_encode(mic_hex,    p->mic,      16);
 		hex_encode(anonce_hex, p->anonce,   32);
 		hex_encode(eapol_hex,  p->m2_eapol, p->m2_eapol_len);
-		/* messagepair: 0=M1+M2, 2=M2+M3 */
-		int mp = (p->msg_bitmap & 0x04) && !(p->msg_bitmap & 0x01) ? 2 : 0;
+		p->messagepair = compute_messagepair(p);
 		fprintf(f, "WPA*02*%s*%s*%s*%s*%s*%s*%02x\n",
 		        mic_hex, ap_hex, sta_hex, ssid_hex,
-		        anonce_hex, eapol_hex, mp);
+		        anonce_hex, eapol_hex, p->messagepair);
+	} else if (p->have_anonce && p->have_m2) {
+		log_debug("handshake: zeroed ANONCE, skipping WPA*02 for %02x:..:%02x",
+		          p->ap_bssid[0], p->ap_bssid[5]);
 	}
 
 	fclose(f);
@@ -186,6 +229,10 @@ static void payload_emit(struct handshake *h, enum hs_event evt,
 		.rssi            = p->rssi,
 		.msg_seen_bitmap = p->msg_bitmap,
 		.have_pmkid      = p->have_pmkid,
+		/* Q7: the computed WPA*02 messagepair (0 if no usable EAPOL pair
+		 * yet). Lets the agent/UI show capture quality, not just a count. */
+		.messagepair     = (p->have_anonce && p->have_m2 && !nonce_is_zero(p->anonce))
+		                     ? compute_messagepair(p) : 0,
 	};
 	memcpy(pl.ap_bssid, p->ap_bssid, 6);
 	memcpy(pl.sta_mac,  p->sta_mac,  6);
@@ -415,6 +462,10 @@ void handshake_observe(struct handshake *h,
 	if (ek.msg >= EAPOL_MSG_M1 && ek.msg <= EAPOL_MSG_M4)
 		p->msg_bitmap |= (uint8_t)(1u << (ek.msg - 1));
 
+	/* Record replay counters for MESSAGEPAIR validation (Q7). */
+	if (ek.msg == EAPOL_MSG_M1) { p->m1_rc = ek.replay_counter; p->have_m1_rc = 1; }
+	if (ek.msg == EAPOL_MSG_M3) { p->m3_rc = ek.replay_counter; p->have_m3_rc = 1; }
+
 	/* ANonce comes from M1 or M3 (both are AP→STA with ACK=1). */
 	if ((ek.msg == EAPOL_MSG_M1 || ek.msg == EAPOL_MSG_M3) &&
 	    ek.has_nonce && !p->have_anonce) {
@@ -444,6 +495,7 @@ void handshake_observe(struct handshake *h,
 			if (len >= 4 + 77 + 16)
 				memset(p->m2_eapol + 4 + 77, 0, 16);
 			memcpy(p->mic, ek.mic, 16);
+			p->m2_rc   = ek.replay_counter;
 			p->have_m2 = 1;
 		}
 	}

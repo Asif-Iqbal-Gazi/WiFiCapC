@@ -58,6 +58,7 @@ struct eapol_info {
 	int            is_eapol_key;
 	uint8_t        descriptor_type;
 	uint16_t       key_information;
+	uint64_t       replay_counter;  /* key descriptor bytes 5..12 (BE) */
 	enum eapol_msg msg;
 	int            has_pmkid;
 	uint8_t        pmkid[16];

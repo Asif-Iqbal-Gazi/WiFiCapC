@@ -6,6 +6,12 @@
 /* ---- helpers ----------------------------------------------------------- */
 
 static uint16_t be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
+static uint64_t be64(const uint8_t *p)
+{
+	uint64_t v = 0;
+	for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
+	return v;
+}
 
 /*
  * Compute the offset from the start of the 802.11 MAC frame to the byte
@@ -127,6 +133,7 @@ int eapol_parse(const uint8_t *frame, size_t len,
 	out->is_eapol_key    = 1;
 	out->descriptor_type = p[0];
 	out->key_information = be16(p + 1);
+	out->replay_counter  = be64(p + 5);
 
 	out->eapol_frame_off = eapol_off;
 	out->eapol_frame_len = 4 + (size_t)plen;

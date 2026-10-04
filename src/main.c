@@ -698,6 +698,10 @@ static int emit_hs_event(struct app *a, const char *tag,
 	pos = (size_t)r;
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "pmkid", pl->have_pmkid)) < 0) return -1;
 	pos = (size_t)r;
+	/* Q7: computed WPA*02 messagepair — low 3 bits = pair type, bit 7 set
+	 * when the replay counter couldn't be verified. 0 = no usable EAPOL. */
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "messagepair", pl->messagepair)) < 0) return -1;
+	pos = (size_t)r;
 	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 

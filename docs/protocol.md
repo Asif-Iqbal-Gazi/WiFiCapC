@@ -150,9 +150,14 @@ Example — the agent dropping the 4/sec channel chatter it ignores:
 | `sta.lost` | STA | `mac`, `ap_bssid?`, `vendor?`, `channel`, `rssi` |
 | `iface.channel` | IFACE | `channel`, `freq` — emitted on every hop (~4/s) |
 | `iface.mode` | IFACE | `mode` (`"managed"`/`"monitor"`) |
-| `pmkid.captured` | HANDSHAKE | `ap_bssid`, `sta_mac`, `channel`, `rssi`, `msg_seen`, `pmkid` |
+| `pmkid.captured` | HANDSHAKE | `ap_bssid`, `sta_mac`, `channel`, `rssi`, `msg_seen`, `pmkid`, `messagepair` |
 | `handshake.captured` | HANDSHAKE | one or more 4-way frames seen (same fields) |
 | `handshake.done` | HANDSHAKE | pair retired; adds `pcap_path`, `hash22000_path?` |
+
+`messagepair` is the computed hashcat WPA\*02 message-pair byte: low 3 bits are
+the pair type (`0`=M1+M2, `2`=M2+M3 authorized), and **bit 7 (0x80)** is set
+when the replay counter couldn't be verified (hashcat will nonce-error-correct).
+`0` means no usable EAPOL pair yet (e.g. PMKID-only, or a zeroed ANONCE we drop).
 
 Fields marked `?` are omitted when unknown (hidden SSID, unresolved/
 randomized OUI vendor, unassociated STA, PMKID-only pairs with no `.22000`).

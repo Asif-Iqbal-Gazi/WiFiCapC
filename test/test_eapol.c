@@ -157,6 +157,30 @@ static void test_m4(void)
 	ASSERT(ek.msg == EAPOL_MSG_M4, "M4: classified as M4");
 }
 
+static void test_replay_counter(void)
+{
+	/* Q7: the replay counter (key-desc bytes 5..12, BE u64) is extracted so
+	 * handshake.c can validate M1/M2/M3 pairing. */
+	uint8_t f[256];
+	uint16_t ki = (1u << 8) | (1u << 3);            /* M2 */
+	size_t   n  = build_eapol_frame(f, ki, 0, NULL, 0);
+
+	/* Patch a known counter into the key descriptor: SNAP 88 8E, then
+	 * EAPOL hdr (4), then key-desc byte 5. */
+	size_t snap = 0;
+	for (size_t j = 0; j + 1 < n; j++)
+		if (f[j] == 0x88 && f[j+1] == 0x8E) { snap = j; break; }
+	ASSERT(snap > 0, "replay: located 0x888E");
+	size_t rc_off = snap + 2 + 4 + 5;
+	uint64_t want = 0x0102030405060708ULL;
+	for (int b = 0; b < 8; b++)
+		f[rc_off + b] = (uint8_t)(want >> (8 * (7 - b)));
+
+	struct dot11_info d; dot11_parse(f, n, &d);
+	struct eapol_info ek; eapol_parse(f, n, &d, &ek);
+	ASSERT(ek.replay_counter == want, "replay: counter extracted (BE u64)");
+}
+
 static void test_non_eapol(void)
 {
 	/* Plain data frame with non-EAPOL EtherType (IPv4 = 0x0800). */
@@ -183,6 +207,7 @@ int main(void)
 	test_m2();
 	test_m3();
 	test_m4();
+	test_replay_counter();
 	test_non_eapol();
 	printf("\n%d passed, %d failed\n", n_pass, n_fail);
 	return n_fail ? 1 : 0;
