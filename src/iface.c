@@ -443,6 +443,86 @@ int iface_set_channel(struct iface *i, int channel)
  * API rather than overloading the channel number.
  * ------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * AU1: regdomain-aware channel enumeration via NL80211_CMD_GET_WIPHY.
+ * ------------------------------------------------------------------------- */
+
+struct chan_ctx {
+	uint32_t wiphy;   /* only accept freqs from our radio */
+	int     *out;
+	int      max;
+	int      n;
+};
+
+static void chan_add(struct chan_ctx *c, int ch)
+{
+	if (ch <= 0) return;
+	for (int i = 0; i < c->n; i++)
+		if (c->out[i] == ch) return;         /* dedup (split dumps repeat) */
+	if (c->n < c->max) c->out[c->n++] = ch;
+}
+
+static int parse_wiphy_channels(struct nl_msg *msg, void *arg)
+{
+	struct chan_ctx   *c    = arg;
+	struct nlattr     *tb[NL80211_ATTR_MAX + 1];
+	struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
+
+	nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
+	          genlmsg_attrlen(gnlh, 0), NULL);
+
+	if (tb[NL80211_ATTR_WIPHY] &&
+	    nla_get_u32(tb[NL80211_ATTR_WIPHY]) != c->wiphy)
+		return NL_SKIP;
+	if (!tb[NL80211_ATTR_WIPHY_BANDS])
+		return NL_SKIP;
+
+	struct nlattr *band;
+	int rem_band;
+	nla_for_each_nested(band, tb[NL80211_ATTR_WIPHY_BANDS], rem_band) {
+		struct nlattr *bt[NL80211_BAND_ATTR_MAX + 1];
+		nla_parse(bt, NL80211_BAND_ATTR_MAX, nla_data(band), nla_len(band), NULL);
+		if (!bt[NL80211_BAND_ATTR_FREQS]) continue;
+
+		struct nlattr *freq;
+		int rem_freq;
+		nla_for_each_nested(freq, bt[NL80211_BAND_ATTR_FREQS], rem_freq) {
+			struct nlattr *ft[NL80211_FREQUENCY_ATTR_MAX + 1];
+			nla_parse(ft, NL80211_FREQUENCY_ATTR_MAX,
+			          nla_data(freq), nla_len(freq), NULL);
+			if (!ft[NL80211_FREQUENCY_ATTR_FREQ]) continue;
+			if (ft[NL80211_FREQUENCY_ATTR_DISABLED]) continue; /* regdomain */
+			int mhz = (int)nla_get_u32(ft[NL80211_FREQUENCY_ATTR_FREQ]);
+			chan_add(c, iface_freq_to_chan(mhz));  /* -1 (5/6 GHz) -> skipped */
+		}
+	}
+	return NL_SKIP;
+}
+
+int iface_supported_channels(struct iface *i, int *out, int max)
+{
+	if (!i || !out || max <= 0) return -1;
+	struct nl_sock *sk = iface_nl(i);
+	if (!sk) return -1;
+
+	struct nl_msg *msg = nlmsg_alloc();
+	if (!msg) return -1;
+	/* Dump our wiphy; SPLIT_WIPHY_DUMP so a large (5/6 GHz) radio still comes
+	 * back whole across several messages — nl_send_and_wait loops for us. */
+	genlmsg_put(msg, 0, 0, i->nl_family, 0, NLM_F_DUMP,
+	            NL80211_CMD_GET_WIPHY, 0);
+	nla_put_u32(msg, NL80211_ATTR_WIPHY, i->wiphy);
+	nla_put_flag(msg, NL80211_ATTR_SPLIT_WIPHY_DUMP);
+
+	struct chan_ctx ctx = { .wiphy = i->wiphy, .out = out, .max = max, .n = 0 };
+	int rc = nl_send_and_wait(sk, msg, parse_wiphy_channels, &ctx);
+	if (rc < 0) {
+		log_err("nl80211 GET_WIPHY failed: %d", rc);
+		return -1;
+	}
+	return ctx.n;
+}
+
 int iface_chan_to_freq(int ch)
 {
 	if (ch >= 1 && ch <= 13) return 2407 + ch * 5;

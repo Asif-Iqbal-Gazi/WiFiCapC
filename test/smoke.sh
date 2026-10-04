@@ -102,6 +102,10 @@ assert_match "$resp" 'no table'          "list_aps before recon → error"
 resp=$(run '{"id":23,"cmd":"list_stas"}')
 assert_match "$resp" 'no table'          "list_stas before recon → error"
 
+# AU1 — iface_channels requires an iface
+resp=$(run '{"id":24,"cmd":"iface_channels"}')
+assert_match "$resp" 'no iface set'      "iface_channels before iface_set → error"
+
 resp=$(run '{"id":24,"cmd":"clear"}')
 assert_match "$resp" '"ok":true'         "clear on empty → ok"
 

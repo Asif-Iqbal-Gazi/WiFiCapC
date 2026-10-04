@@ -14,6 +14,50 @@ then Tier 2 (perf), then Tier 3 (features).
 - [docs/IDEAS/iface-and-driver-health.md](docs/IDEAS/iface-and-driver-health.md)
   — brcmfmac wedge detection + external recovery actor. R2 (shipped)
   is one input to its Phase 1.
+- [docs/IDEAS/auto-mode.md](docs/IDEAS/auto-mode.md) — `--auto`: a
+  self-sufficient autonomous capture mode (channel auto-detect, intelligent
+  hop+attack to maximise handshakes à la hcxdumptool, self-written
+  artifacts), with pwnagotc inverted to a thin consumer. Spawns the AU*
+  items below.
+
+---
+
+# Autonomous mode (`--auto`) — see docs/IDEAS/auto-mode.md
+
+### AU1 — channel auto-detection (Phase 0) ✅ v0.7.2
+- [x] `iface_supported_channels()` parses `NL80211_CMD_GET_WIPHY` bands/freqs
+      (regdomain + DISABLED/NO-IR aware), generic across 2.4/5/6 GHz. Replaces
+      the hardcoded 1-13 default when channels=auto.
+- Files: `src/iface.c`, `include/iface.h`.
+
+### AU2 — self-managed monitor vif (Phase 0)
+- [ ] Daemon brings monitor up itself (create vif / set type), brcmfmac-safe
+      (managed netdev down first; never flip it live -> `-25`). Lets `--auto`
+      run with no launcher; retires the pwnagotc launcher's vif creation
+      (old A3). Needs on-pi validation.
+- Files: `src/iface.c`, `include/iface.h`.
+
+### AU3 — auto orchestrator + IPC (Phase 1)
+- [ ] `--auto` flag + `auto_start`/`auto_stop` IPC + `stats.auto`. New
+      `src/auto.c` sequences detect->monitor->recon->hop->attack.
+- Files: `src/auto.c`, `src/main.c`.
+
+### AU4 — channel-coupled capture-maximising engine (Phase 1)
+- [ ] Per-dwell attack rounds (inject only on the tuned channel); PMKID-first
+      via directed assoc, targeted deauth only when a client exists + a
+      reconnect listen window; stop at first usable handshake (PMKID or
+      Q7-validated 4-way); adaptive dwell. Builds on P2 + chanhop.
+- Files: `src/auto.c`, `src/main.c`, `src/chanhop.c`, `src/inject.c`.
+
+### AU5 — standalone UX (Phase 2)
+- [ ] Periodic status summary (human + JSON via X5); auto-mode config knobs
+      via `--config` (channels=auto|list, attack mode, deauth dial, dwell,
+      output dir, filters).
+- Files: `src/auto.c`, `src/main.c`.
+
+### AU6 — pwnagotc thin consumer (Phase 3, agent repo)
+- [ ] Agent detects `stats.auto`, stops orchestrating, subscribes to events
+      + a new `auto.status`, displays (channel/counts/mood), uploads online.
 
 ---
 

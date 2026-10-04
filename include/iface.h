@@ -56,6 +56,15 @@ int iface_set_channel(struct iface *i, int channel);
 /* Helpers. */
 int  iface_chan_to_freq(int channel);
 int  iface_freq_to_chan(int freq_mhz);
+
+/*
+ * AU1: fill `out` (capacity `max`) with the channels this radio is allowed
+ * to use, read from the regdomain via NL80211_CMD_GET_WIPHY (DISABLED
+ * frequencies are skipped). Returns the count written (>=0), or -1 on error.
+ * Only channels the daemon can currently tune (2.4 GHz, per iface_*_freq)
+ * are returned; 5/6 GHz awaits frequency-based tuning. Deduped, unordered.
+ */
+int  iface_supported_channels(struct iface *i, int *out, int max);
 const char *iface_mode_name(enum iface_mode mode);
 
 #endif

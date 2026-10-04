@@ -64,7 +64,8 @@ Events have no `id` and arrive at any time, interleaved with replies.
 | `version` | — | `{version: "x.y.z"}` |
 | `uptime` | — | `{uptime: <seconds>}` |
 | `stats` | — | see **stats** below |
-| `iface_info` | — | `{iface, mode, channel}` |
+| `iface_info` | — | `{iface, ifindex, wiphy, mode, channel, freq, hopping}` |
+| `iface_channels` | — | `{count, channels: [...]}` — regdomain-allowed channels the radio can tune (AU1); requires an iface set |
 
 **stats** `data` fields: `n_aps`, `n_stas`, `n_handshake_pairs`,
 `frames_total`, `frames_dropped`, `capturing` (bool), `hopping` (bool),

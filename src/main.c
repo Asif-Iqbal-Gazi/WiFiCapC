@@ -317,6 +317,40 @@ static int handle_iface_info(struct app *a, int fd, int64_t id)
 	return ipc_send_to(a->ipc, fd, buf, pos);
 }
 
+/* AU1: report the regdomain-allowed channels this radio can use. */
+static int handle_iface_channels(struct app *a, int fd, int64_t id)
+{
+	if (!a->iface_open)
+		return reply_error(a->ipc, fd, id, "no iface set");
+
+	int chans[CHANHOP_MAX_CHANNELS];
+	int n = iface_supported_channels(&a->iface, chans, CHANHOP_MAX_CHANNELS);
+	if (n < 0)
+		return reply_error(a->ipc, fd, id, "channel enumeration failed");
+
+	char   buf[1024];
+	size_t pos   = 0;
+	int    first = 1;
+	ssize_t r;
+	if ((r = proto_reply_ok_begin(buf, sizeof buf, pos, id)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "count", n)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_append(buf, sizeof buf, pos, ",\"channels\":[")) < 0) return -1;
+	pos = (size_t)r;
+	for (int i = 0; i < n; i++) {
+		char num[16];
+		snprintf(num, sizeof num, "%s%d", i ? "," : "", chans[i]);
+		if ((r = proto_append(buf, sizeof buf, pos, num)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_append(buf, sizeof buf, pos, "]")) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_reply_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_send_to(a->ipc, fd, buf, pos);
+}
+
 static int ensure_hopper(struct app *a)
 {
 	if (a->hopper) return 0;
@@ -1215,6 +1249,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "uptime")      == 0) return handle_uptime(a, fd, req.id);
 	if (strcmp(req.cmd, "iface_set")   == 0) return handle_iface_set(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "iface_info")  == 0) return handle_iface_info(a, fd, req.id);
+	if (strcmp(req.cmd, "iface_channels") == 0) return handle_iface_channels(a, fd, req.id);
 	if (strcmp(req.cmd, "monitor_on")  == 0) return handle_monitor_on(a, fd, req.id);
 	if (strcmp(req.cmd, "monitor_off") == 0) return handle_monitor_off(a, fd, req.id);
 	if (strcmp(req.cmd, "set_channel") == 0) return handle_set_channel(a, fd, req.id, req.args_raw);
