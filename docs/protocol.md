@@ -104,6 +104,7 @@ Typical bring-up order: `iface_set` → `monitor_on` → `recon_start` →
 | `set_handshake_dir` | `{path}` | Where per-pair `.pcap`/`.22000` are written. |
 | `set_mac_rand` | `{enabled: 0\|1}` | Fresh random MAC per assoc (S1). |
 | `set_pmkid_only` | `{enabled: 0\|1}` | Autonomous attack sends assoc only, no deauth (S2). |
+| `set_attack` | `{enabled: 0\|1}` | Gate the `--auto` per-channel attack at runtime. Capture + hopping are unaffected; only the active assoc/deauth turns on/off (e.g. agent manual mode → off). |
 
 ### Handshakes
 

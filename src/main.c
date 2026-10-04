@@ -27,7 +27,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.2"
+#define WIFICAPC_VER     "0.8.3"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -56,6 +56,7 @@ struct app {
 	int                mac_rand;   /* --mac-rand applied to inject when created */
 	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
 	int                auto_mode;  /* AU3: self-driving --auto mode */
+	int                attack_enabled; /* --auto: gate the per-channel attack (set_attack) */
 	char               auto_vif[16]; /* AU2: monitor vif we created ("" = none) */
 	time_t             status_last;  /* AU5: last periodic --auto status log */
 	const char        *state_file; /* R1: recon-table persistence path ("" disables) */
@@ -181,8 +182,10 @@ static void on_chanhop_tick(int channel, int freq, void *user)
 	struct app *a = user;
 	emit_event_iface_channel(a, channel, freq);
 	/* AU4: in --auto, couple the attack to the dwell — inject at the APs on
-	 * the channel we just tuned to (off-channel frames never reach them). */
-	if (a->auto_mode)
+	 * the channel we just tuned to (off-channel frames never reach them).
+	 * Gated by attack_enabled so the agent can run capture-only (manual
+	 * mode) without any active attack, per set_attack. */
+	if (a->auto_mode && a->attack_enabled)
 		attack_on_channel(a, channel);
 }
 
@@ -1109,8 +1112,11 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 	if (o->attack) {
 		if (o->auto_mode) {
 			/* AU4: attacks are driven per-dwell from on_chanhop_tick, so
-			 * injection lands on the tuned channel. No separate timer. */
+			 * injection lands on the tuned channel. No separate timer.
+			 * Default on for a standalone engine; a client (the agent) can
+			 * flip it off for capture-only via set_attack. */
 			a->auto_mode = 1;
+			a->attack_enabled = 1;
 			log_info("autostart: autonomous attacks enabled (per-channel, --auto)");
 		} else {
 			a->attack_fd = start_attack_timer(a, o->attack_interval_ms);
@@ -1175,6 +1181,23 @@ static int handle_set_pmkid_only(struct app *a, int fd, int64_t id, const char *
 	 * PMKID-only (assoc, no deauth). Takes effect on the next attack tick;
 	 * harmless when --attack is off. */
 	a->pmkid_only = !!en;
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+static int handle_set_attack(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+	int64_t en = 0;
+	if (proto_args_get_int(args, "enabled", &en) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+
+	/* Gate the --auto per-channel attack at runtime. Capture + hopping are
+	 * unaffected — this only turns the active assoc/deauth on or off, so a
+	 * client can run capture-only (e.g. pwnagotchi manual mode) and flip
+	 * attacks on when it switches to auto. */
+	a->attack_enabled = !!en;
+	log_info("set_attack: autonomous attack %s", a->attack_enabled ? "on" : "off");
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
@@ -1341,7 +1364,7 @@ static int handle_stats(struct app *a, int fd, int64_t id)
 	                                                    : a->iface.channel)) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "attack_active",
-	                          a->attack_fd >= 0 || a->auto_mode)) < 0) return -1;
+	                          a->attack_fd >= 0 || (a->auto_mode && a->attack_enabled))) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "pmkid_only",
 	                          a->pmkid_only)) < 0) return -1;
@@ -1399,6 +1422,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_mac_rand") == 0) return handle_set_mac_rand(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_pmkid_only") == 0) return handle_set_pmkid_only(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "set_attack")   == 0) return handle_set_attack(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "subscribe")    == 0) return handle_subscribe(a, fd, req.id, req.args_raw, 1);
 	if (strcmp(req.cmd, "unsubscribe")  == 0) return handle_subscribe(a, fd, req.id, req.args_raw, 0);
 

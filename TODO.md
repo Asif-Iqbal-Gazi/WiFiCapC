@@ -335,6 +335,8 @@ then Tier 2 (perf), then Tier 3 (features).
 - **v0.6.12–v0.6.18** radiotap/recon/channel hardening (B1,B2,C1–C3,Q6),
   nl80211 session + snapshot perf (P1,P3), eager finalize (R5), smarter
   attack scheduling (P2), OUI vendor lookup (Q1), rx-silence watchdog (R7)
+- **v0.8.3** `set_attack` IPC — gate the `--auto` attack at runtime
+  (capture/hop unaffected), so a client can run capture-only
 - **v0.8.2** `--auto` reuses an existing monitor vif untouched (clean
   integration with an environment that preps it, e.g. the pi launcher)
 - **v0.8.1** `--auto` standalone UX: periodic status line + `auto` config key (AU5)

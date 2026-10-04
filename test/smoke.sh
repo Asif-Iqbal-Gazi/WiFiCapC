@@ -156,6 +156,12 @@ assert_match "$resp" '"ok":true'         "set_pmkid_only enable → ok"
 resp=$(run '{"id":61,"cmd":"set_pmkid_only"}')
 assert_match "$resp" "missing 'enabled'" "set_pmkid_only without args → error"
 
+# set_attack (--auto attack toggle)
+resp=$(run '{"id":64,"cmd":"set_attack","args":{"enabled":0}}')
+assert_match "$resp" '"ok":true'         "set_attack disable → ok"
+resp=$(run '{"id":65,"cmd":"set_attack"}')
+assert_match "$resp" "missing 'enabled'" "set_attack without args → error"
+
 # X4 — subscribe / unsubscribe
 resp=$(run '{"id":70,"cmd":"unsubscribe","args":{"events":"iface.channel,iface.mode"}}')
 assert_match "$resp" '"ok":true'         "unsubscribe iface events → ok"
