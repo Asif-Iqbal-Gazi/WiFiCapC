@@ -26,7 +26,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.0"
+#define WIFICAPC_VER     "0.8.1"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -56,6 +56,7 @@ struct app {
 	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
 	int                auto_mode;  /* AU3: self-driving --auto mode */
 	char               auto_vif[16]; /* AU2: monitor vif we created ("" = none) */
+	time_t             status_last;  /* AU5: last periodic --auto status log */
 	const char        *state_file; /* R1: recon-table persistence path ("" disables) */
 	int                state_max_age; /* R1: ignore persisted state older than this (s) */
 	time_t             started;
@@ -1515,6 +1516,7 @@ static int load_config(const char *path, struct opts *o)
 		else if (!strcmp(k, "state_file"))      o->state_file = strdup(v);
 		else if (!strcmp(k, "state_max_age"))   o->state_max_age = atoi(v);
 		else if (!strcmp(k, "log_format"))      o->log_format = strdup(v);
+		else if (!strcmp(k, "auto"))            o->auto_mode = cfg_bool(v);
 		else log_warn("config: %s:%d: unknown key '%s', ignoring", path, lineno, k);
 	}
 	fclose(f);
@@ -1596,6 +1598,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
  * silence is a wedge, not a quiet channel. */
 #define RX_SILENCE_SEC     45
 #define HEALTH_CHECK_SEC    5
+#define AUTO_STATUS_SEC    15   /* AU5: --auto status-line cadence */
 
 static void on_health_timer(int fd, uint32_t events, void *user)
 {
@@ -1607,6 +1610,19 @@ static void on_health_timer(int fd, uint32_t events, void *user)
 	time_t now = time(NULL);
 	int hopping   = a->hopper  && chanhop_is_running(a->hopper);
 	int capturing = a->capture && capture_is_running(a->capture);
+
+	/* AU5: periodic standalone status line (--auto only; in agent mode the
+	 * agent renders status). Piggybacks this timer to avoid another fd. */
+	if (a->auto_mode && a->table && now - a->status_last >= AUTO_STATUS_SEC) {
+		a->status_last = now;
+		int ch = (a->hopper && chanhop_current(a->hopper))
+		         ? chanhop_current(a->hopper) : a->iface.channel;
+		log_info("auto: ch=%d aps=%d stas=%d handshakes=%d frames=%llu dropped=%llu",
+		         ch, table_n_aps(a->table), table_n_stas(a->table),
+		         a->hs ? handshake_n_pairs(a->hs) : 0,
+		         (unsigned long long)(a->capture ? capture_frames_total(a->capture) : 0),
+		         (unsigned long long)(a->capture ? capture_frames_dropped(a->capture) : 0));
+	}
 
 	/* Only meaningful while actively hopping+capturing; otherwise keep the
 	 * silence window reset so it starts fresh once hopping resumes. */

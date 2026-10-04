@@ -49,8 +49,8 @@ then Tier 2 (perf), then Tier 3 (features).
       Q7-validated 4-way); adaptive dwell. Builds on P2 + chanhop.
 - Files: `src/auto.c`, `src/main.c`, `src/chanhop.c`, `src/inject.c`.
 
-### AU5 — standalone UX (Phase 2)
-- [ ] Periodic status summary (human + JSON via X5); auto-mode config knobs
+### AU5 — standalone UX (Phase 2) ✅ v0.8.1 (status + `auto` config key; deauth/dwell dials deferred)
+- [x] Periodic status summary (human + JSON via X5); auto-mode config knobs
       via `--config` (channels=auto|list, attack mode, deauth dial, dwell,
       output dir, filters).
 - Files: `src/auto.c`, `src/main.c`.
@@ -335,6 +335,7 @@ then Tier 2 (perf), then Tier 3 (features).
 - **v0.6.12–v0.6.18** radiotap/recon/channel hardening (B1,B2,C1–C3,Q6),
   nl80211 session + snapshot perf (P1,P3), eager finalize (R5), smarter
   attack scheduling (P2), OUI vendor lookup (Q1), rx-silence watchdog (R7)
+- **v0.8.1** `--auto` standalone UX: periodic status line + `auto` config key (AU5)
 - **v0.8.0** autonomous `--auto` mode: self-managed monitor vif (AU2),
   orchestrator (AU3), channel-coupled PMKID-first/deauth engine (AU4) —
   validated self-driving on hardware (hw-agnostic; brcmfmac reload stays the

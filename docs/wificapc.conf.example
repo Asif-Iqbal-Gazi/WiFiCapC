@@ -15,3 +15,4 @@
 # state_file    = /tmp/wificapc/state.bin
 # state_max_age = 600
 # log_format    = text
+# auto          = false   # self-driving --auto mode (see wificapc(8))
