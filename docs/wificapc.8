@@ -1,0 +1,124 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH WIFICAPC 8 "2026" "WiFiCapC" "System Administration"
+.SH NAME
+wificapc \- native 802.11 monitor-mode capture daemon
+.SH SYNOPSIS
+.B wificapc
+.RI [ options ]
+.SH DESCRIPTION
+.B wificapc
+is a small, passive 802.11 capture daemon for Linux (built for the
+Raspberry Pi Zero 2 W's 2.4 GHz brcmfmac radio). It puts an interface into
+monitor mode, hops channels, builds AP/STA recon tables, collects WPA
+4-way handshakes and PMKIDs into per-pair
+.B .pcap
+and hashcat
+.B .22000
+files, and can inject association and deauthentication frames.
+.PP
+The daemon is deliberately
+.BR passive :
+it performs no policy of its own beyond optional autonomous attacks. A
+client (for example the pwnagotchi agent) drives it over a Unix-socket
+JSON protocol \(em see
+.BR "PROTOCOL" .
+.SH OPTIONS
+.SS General
+.TP
+.BR \-s ", " \-\-socket " " \fIPATH\fR
+Unix socket path (default
+.BR /run/wificapc.sock ).
+.TP
+.BR \-m ", " \-\-mode " " \fIOCTAL\fR
+Socket file mode (default
+.BR 0660 ).
+.TP
+.BR \-f ", " \-\-foreground
+Stay in the foreground and log to stderr.
+.TP
+.BR \-d ", " \-\-debug
+Enable debug logging.
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SS Auto-start
+If
+.B \-\-iface
+is given the daemon brings the radio up and starts capturing immediately,
+without waiting for a client.
+.TP
+.BR \-i ", " \-\-iface " " \fIIFACE\fR
+Wireless interface to use (e.g.
+.BR wlan0 ).
+.TP
+.BR \-H ", " \-\-hs\-dir " " \fIPATH\fR
+Handshake output directory (default
+.BR /etc/pwnagotchi/handshakes ).
+.TP
+.BR \-C ", " \-\-channels " " \fILIST\fR
+Comma-separated channels to hop (default 1\-13).
+.TP
+.BR \-\-hop\-interval " " \fIMS\fR
+Per-channel dwell time in milliseconds (default 250).
+.SS Autonomous attacks
+.TP
+.BR \-A ", " \-\-attack
+Enable autonomous deauth+assoc attacks against visible targets.
+.TP
+.BR \-\-attack\-interval " " \fIMS\fR
+Attack scheduling period in milliseconds (default 5000).
+.TP
+.B \-\-mac\-rand
+Use a fresh locally-administered, unicast random MAC for every
+association frame.
+.TP
+.B \-\-pmkid\-only
+Autonomous attack sends association frames only (PMKID elicitation) and
+never deauthenticates clients: quieter and faster target cycling.
+.SS Recon persistence
+.TP
+.BR \-\-state\-file " " \fIPATH\fR
+File the AP/STA recon tables are dumped to on shutdown and reloaded from on
+start (default
+.BR /tmp/wificapc/state.bin ).
+Pass an empty string to disable.
+.TP
+.BR \-\-state\-max\-age " " \fIS\fR
+Ignore persisted recon state older than
+.I S
+seconds (default 600).
+.SH SIGNALS
+.TP
+.BR SIGINT ", " SIGTERM
+Shut down cleanly: close the capture socket, return the interface to
+managed mode, and persist the recon table.
+.SH EXIT STATUS
+Exits non-zero on a fatal error. In particular, exit code
+.B 3
+is used by the rx-silence capture-health watchdog to signal a wedged radio
+so that
+.BR systemd (1)
+restarts the service and re-initialises the driver.
+.SH FILES
+.TP
+.B /run/wificapc.sock
+Default control socket.
+.TP
+.B /etc/pwnagotchi/handshakes/
+Default handshake output directory.
+.TP
+.B /tmp/wificapc/state.bin
+Default persisted recon table.
+.SH PROTOCOL
+The line-delimited JSON command/event protocol is documented in
+.IR docs/protocol.md
+in the source distribution.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR iw (8),
+.BR hashcat (1)
+.SH AUTHORS
+Asif Iqbal Gazi and contributors.

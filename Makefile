@@ -12,6 +12,7 @@ LDFLAGS ?=
 LDLIBS  ?= $(NL_LIBS)
 
 PREFIX  ?= /usr/local
+MANDIR  ?= $(PREFIX)/share/man/man8
 
 BUILD   := build
 SRCS    := $(wildcard src/*.c)
@@ -49,6 +50,7 @@ $(BUILD):
 # `make install install-systemd`.
 install: $(BIN)
 	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	install -D -m 0644 docs/wificapc.8 $(DESTDIR)$(MANDIR)/wificapc.8
 
 install-systemd:
 	install -D -m 0644 systemd/wificapc.service $(DESTDIR)/etc/systemd/system/wificapc.service
@@ -56,6 +58,7 @@ install-systemd:
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	rm -f $(DESTDIR)$(MANDIR)/wificapc.8
 
 uninstall-systemd:
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc.service
