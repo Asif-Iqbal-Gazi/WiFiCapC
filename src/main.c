@@ -13,6 +13,7 @@
 
 #include <errno.h>
 #include <getopt.h>
+#include <net/if.h>    /* if_nametoindex */
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,7 +27,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.1"
+#define WIFICAPC_VER     "0.8.2"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -997,6 +998,18 @@ struct autostart_opts {
 static int auto_prepare_vif(struct app *a, const char *base,
                             char *mon_out, size_t cap)
 {
+	snprintf(mon_out, cap, "%smon", base);
+
+	/* If a monitor vif already exists, the environment prepped it (e.g. the
+	 * pwnagotchi launcher after its brcmfmac reload). Reuse it as-is and do
+	 * NOT touch the base's up/down state — bringing the base up would disturb
+	 * the already-tuned monitor vif. We didn't create it, so we won't delete
+	 * it on exit. */
+	if (if_nametoindex(mon_out) != 0) {
+		log_info("auto: reusing existing monitor vif %s", mon_out);
+		return 0;
+	}
+
 	struct iface tmp = {0};   /* iface_open() calls iface_close() first, which
 	                           * frees tmp.nl — must be zeroed or it frees garbage. */
 	if (iface_open(&tmp, base) < 0) {
@@ -1010,7 +1023,6 @@ static int auto_prepare_vif(struct app *a, const char *base,
 	 * DOWN so the monitor vif can tune the radio (the -25 invariant). */
 	iface_link_up(&tmp);
 	sleep(2);
-	snprintf(mon_out, cap, "%smon", base);
 	int rc = iface_add_monitor_vif(&tmp, mon_out);
 	if (rc >= 0) {
 		sleep(1);
