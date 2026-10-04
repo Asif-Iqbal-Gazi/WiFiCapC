@@ -11,9 +11,18 @@ enum log_level {
 	LL_DEBUG = 3,
 };
 
+enum log_format {
+	LOG_FMT_TEXT = 0,   /* "HH:MM:SS.mmm LVL message" (default) */
+	LOG_FMT_JSON = 1,   /* one JSON object per line */
+};
+
 void log_init(enum log_level level, int use_syslog);
 void log_close(void);
 void log_set_level(enum log_level level);
+
+/* Select stderr output format. No effect in syslog mode (journald gets the
+ * raw message). Call once at startup. */
+void log_set_format(enum log_format fmt);
 
 void log_msg(enum log_level level, const char *fmt, ...)
 	__attribute__((format(printf, 2, 3)));

@@ -1254,6 +1254,7 @@ struct opts {
 	int         pmkid_only;
 	const char *state_file;
 	int         state_max_age;
+	const char *log_format;
 };
 
 static void usage(FILE *f, const char *argv0)
@@ -1284,7 +1285,8 @@ static void usage(FILE *f, const char *argv0)
 	    "                           deauth): PMKID elicitation, quieter, faster\n"
 	    "      --state-file PATH    Recon-table persistence file\n"
 	    "                           (default: " DEFAULT_STATE_FILE "; \"\" disables)\n"
-	    "      --state-max-age S    Ignore persisted state older than S seconds\n",
+	    "      --state-max-age S    Ignore persisted state older than S seconds\n"
+	    "      --log-format FMT     Log format: text (default) or json\n",
 	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
@@ -1297,6 +1299,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		OPT_PMKID_ONLY,
 		OPT_STATE_FILE,
 		OPT_STATE_MAX_AGE,
+		OPT_LOG_FORMAT,
 	};
 	static const struct option longopts[] = {
 		{ "socket",           required_argument, NULL, 's' },
@@ -1315,6 +1318,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		{ "pmkid-only",       no_argument,       NULL, OPT_PMKID_ONLY },
 		{ "state-file",       required_argument, NULL, OPT_STATE_FILE },
 		{ "state-max-age",    required_argument, NULL, OPT_STATE_MAX_AGE },
+		{ "log-format",       required_argument, NULL, OPT_LOG_FORMAT },
 		{ 0 },
 	};
 	int c;
@@ -1339,6 +1343,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		case OPT_PMKID_ONLY:      o->pmkid_only = 1; break;
 		case OPT_STATE_FILE:      o->state_file = optarg; break;
 		case OPT_STATE_MAX_AGE:   o->state_max_age = atoi(optarg); break;
+		case OPT_LOG_FORMAT:      o->log_format = optarg; break;
 		default:  usage(stderr, argv[0]); return -1;
 		}
 	}
@@ -1434,6 +1439,8 @@ int main(int argc, char **argv)
 	}
 
 	log_init(o.debug ? LL_DEBUG : LL_INFO, !o.foreground);
+	if (o.log_format && strcmp(o.log_format, "json") == 0)
+		log_set_format(LOG_FMT_JSON);
 	log_info("wificapc %s starting", WIFICAPC_VER);
 	log_info("listening on %s (mode 0%o)", o.sock_path, (unsigned)o.sock_mode);
 
