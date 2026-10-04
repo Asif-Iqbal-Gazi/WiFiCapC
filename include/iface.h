@@ -65,6 +65,14 @@ int  iface_freq_to_chan(int freq_mhz);
  * are returned; 5/6 GHz awaits frequency-based tuning. Deduped, unordered.
  */
 int  iface_supported_channels(struct iface *i, int *out, int max);
+
+/*
+ * AU2: create / delete a monitor vif on `base`'s wiphy (base must be opened).
+ * iface_add_monitor_vif is a no-op-success if `mon_name` already exists.
+ * Used by --auto to self-manage monitor mode without an external launcher.
+ */
+int  iface_add_monitor_vif(struct iface *base, const char *mon_name);
+int  iface_del_vif(struct iface *base, const char *name);
 const char *iface_mode_name(enum iface_mode mode);
 
 #endif

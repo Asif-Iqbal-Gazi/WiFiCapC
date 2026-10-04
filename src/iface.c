@@ -523,6 +523,60 @@ int iface_supported_channels(struct iface *i, int *out, int max)
 	return ctx.n;
 }
 
+/* ---------------------------------------------------------------------------
+ * AU2: self-managed monitor vif. brcmfmac won't let the monitor interface
+ * tune the radio while the managed netdev is up, and flipping the managed
+ * netdev itself to monitor is unreliable — so --auto creates a dedicated
+ * monitor vif on the same wiphy (like the pwnagotchi launcher did) and the
+ * caller keeps the managed netdev down. `base` must be an opened iface (for
+ * its wiphy + nl session).
+ * ------------------------------------------------------------------------- */
+
+int iface_add_monitor_vif(struct iface *base, const char *mon_name)
+{
+	if (!base || !mon_name || !*mon_name) return -1;
+	if (if_nametoindex(mon_name) != 0) {
+		log_info("iface: monitor vif %s already exists, reusing", mon_name);
+		return 0;   /* 0 = reused (caller won't delete it on exit) */
+	}
+	struct nl_sock *sk = iface_nl(base);
+	if (!sk) return -1;
+	struct nl_msg *msg = nlmsg_alloc();
+	if (!msg) return -1;
+	genlmsg_put(msg, 0, 0, base->nl_family, 0, 0, NL80211_CMD_NEW_INTERFACE, 0);
+	nla_put_u32(msg, NL80211_ATTR_WIPHY, base->wiphy);
+	nla_put_string(msg, NL80211_ATTR_IFNAME, mon_name);
+	nla_put_u32(msg, NL80211_ATTR_IFTYPE, NL80211_IFTYPE_MONITOR);
+	int rc = nl_send_and_wait(sk, msg, NULL, NULL);
+	if (rc < 0) {
+		log_err("iface: NEW_INTERFACE %s (monitor) on wiphy %u failed: %d",
+		        mon_name, base->wiphy, rc);
+		return -1;
+	}
+	log_info("iface: created monitor vif %s on wiphy %u", mon_name, base->wiphy);
+	return 1;   /* 1 = freshly created */
+}
+
+int iface_del_vif(struct iface *base, const char *name)
+{
+	if (!base || !name || !*name) return -1;
+	int idx = (int)if_nametoindex(name);
+	if (idx == 0) return 0;              /* already gone */
+	struct nl_sock *sk = iface_nl(base);
+	if (!sk) return -1;
+	struct nl_msg *msg = nlmsg_alloc();
+	if (!msg) return -1;
+	genlmsg_put(msg, 0, 0, base->nl_family, 0, 0, NL80211_CMD_DEL_INTERFACE, 0);
+	nla_put_u32(msg, NL80211_ATTR_IFINDEX, (uint32_t)idx);
+	int rc = nl_send_and_wait(sk, msg, NULL, NULL);
+	if (rc < 0) {
+		log_warn("iface: DEL_INTERFACE %s failed: %d", name, rc);
+		return -1;
+	}
+	log_info("iface: removed vif %s", name);
+	return 0;
+}
+
 int iface_chan_to_freq(int ch)
 {
 	if (ch >= 1 && ch <= 13) return 2407 + ch * 5;
