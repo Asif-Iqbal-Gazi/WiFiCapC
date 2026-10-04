@@ -145,4 +145,11 @@ assert_match "$resp" '"ok":true'         "set_ttls accepts pwnagotchi defaults"
 resp=$(run '{"id":51,"cmd":"set_ttls"}')
 assert_match "$resp" 'missing args'      "set_ttls without args → error"
 
+# S2 — set_pmkid_only
+resp=$(run '{"id":60,"cmd":"set_pmkid_only","args":{"enabled":1}}')
+assert_match "$resp" '"ok":true'         "set_pmkid_only enable → ok"
+
+resp=$(run '{"id":61,"cmd":"set_pmkid_only"}')
+assert_match "$resp" "missing 'enabled'" "set_pmkid_only without args → error"
+
 echo "all good"

