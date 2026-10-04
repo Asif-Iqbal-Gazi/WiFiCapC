@@ -15,6 +15,10 @@
  * A typical WPA2 M2 is ~200-300 bytes; 1024 is conservative headroom. */
 #define M2_EAPOL_MAX 1024
 
+/* Initial pair-table capacity; grows (doubling) on demand up to
+ * HS_MAX_PAIRS. */
+#define HS_INIT_PAIRS 64
+
 struct hs_pair {
 	int      in_use;
 	uint8_t  ap_bssid[6];
@@ -49,8 +53,9 @@ struct handshake {
 	int            stale_timeout;
 	hs_emit_fn     emit;
 	void          *user;
-	struct hs_pair pairs[HS_MAX_PAIRS];
-	int            n_pairs;
+	struct hs_pair *pairs;        /* dynamic array, `cap` slots */
+	int            cap;           /* allocated slots (<= HS_MAX_PAIRS) */
+	int            n_pairs;       /* slots currently in_use */
 };
 
 static int mac_eq(const uint8_t a[6], const uint8_t b[6]) { return memcmp(a, b, 6) == 0; }
@@ -58,7 +63,7 @@ static int mac_eq(const uint8_t a[6], const uint8_t b[6]) { return memcmp(a, b, 
 static struct hs_pair *find_pair(struct handshake *h,
                                  const uint8_t ap[6], const uint8_t sta[6])
 {
-	for (int i = 0; i < HS_MAX_PAIRS; i++) {
+	for (int i = 0; i < h->cap; i++) {
 		struct hs_pair *p = &h->pairs[i];
 		if (!p->in_use) continue;
 		if (mac_eq(p->ap_bssid, ap) && mac_eq(p->sta_mac, sta)) return p;
@@ -68,9 +73,22 @@ static struct hs_pair *find_pair(struct handshake *h,
 
 static struct hs_pair *alloc_pair(struct handshake *h)
 {
-	for (int i = 0; i < HS_MAX_PAIRS; i++)
+	for (int i = 0; i < h->cap; i++)
 		if (!h->pairs[i].in_use) return &h->pairs[i];
-	return NULL;
+
+	/* All slots in use: grow (doubling) up to the hard cap. Safe to
+	 * realloc here because callers take the returned pointer fresh and
+	 * never hold a pair pointer across an alloc_pair() call. */
+	if (h->cap >= HS_MAX_PAIRS) return NULL;
+	int newcap = h->cap * 2;
+	if (newcap > HS_MAX_PAIRS) newcap = HS_MAX_PAIRS;
+	struct hs_pair *grown = realloc(h->pairs, (size_t)newcap * sizeof *grown);
+	if (!grown) return NULL;  /* keep the old table; caller logs + drops */
+	memset(&grown[h->cap], 0, (size_t)(newcap - h->cap) * sizeof *grown);
+	struct hs_pair *slot = &grown[h->cap];
+	h->pairs = grown;
+	h->cap   = newcap;
+	return slot;
 }
 
 static int ensure_dir(const char *path)
@@ -281,6 +299,9 @@ struct handshake *handshake_create(struct table *table,
 {
 	struct handshake *h = calloc(1, sizeof *h);
 	if (!h) return NULL;
+	h->pairs = calloc(HS_INIT_PAIRS, sizeof *h->pairs);
+	if (!h->pairs) { free(h); return NULL; }
+	h->cap           = HS_INIT_PAIRS;
 	h->table         = table;
 	h->stale_timeout = stale_timeout_sec > 0 ? stale_timeout_sec : 30;
 	h->emit          = cb;
@@ -295,9 +316,10 @@ struct handshake *handshake_create(struct table *table,
 void handshake_destroy(struct handshake *h)
 {
 	if (!h) return;
-	for (int i = 0; i < HS_MAX_PAIRS; i++)
+	for (int i = 0; i < h->cap; i++)
 		if (h->pairs[i].in_use)
 			close_pair(h, &h->pairs[i]);
+	free(h->pairs);
 	free(h);
 }
 
@@ -442,7 +464,7 @@ void handshake_observe(struct handshake *h,
 
 void handshake_tick(struct handshake *h, time_t now)
 {
-	for (int i = 0; i < HS_MAX_PAIRS; i++) {
+	for (int i = 0; i < h->cap; i++) {
 		struct hs_pair *p = &h->pairs[i];
 		if (!p->in_use) continue;
 		if (now - p->last_seen > h->stale_timeout)

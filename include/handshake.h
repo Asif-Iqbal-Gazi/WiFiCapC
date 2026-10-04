@@ -26,7 +26,12 @@
  * `proc_run_hcxpcapngtool` is invoked on it to produce a `.22000` file.
  */
 
-#define HS_MAX_PAIRS 64
+/* Hard ceiling on concurrently-tracked (AP,STA) handshake pairs. The table
+ * starts small (HS_INIT_PAIRS, in handshake.c) and grows on demand up to
+ * this cap, so dense environments no longer drop pairs at a fixed 64 while
+ * a quiet one still costs almost nothing. ~256 x ~1.4 KB is trivial on the
+ * Zero 2's 512 MB. */
+#define HS_MAX_PAIRS 256
 
 enum hs_event {
 	HS_EVT_HANDSHAKE = 0,    /* one or more 4-way frames captured */
