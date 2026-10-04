@@ -137,4 +137,9 @@ int table_snapshot_stas(const struct table *t, struct sta_record *out, int max);
 int table_n_aps (const struct table *t);
 int table_n_stas(const struct table *t);
 
+/* Restore a full record (all fields as persisted) without emitting an event.
+ * Skips duplicates and a full table. Used by state.c on startup (R1). */
+void table_restore_ap (struct table *t, const struct ap_record  *rec);
+void table_restore_sta(struct table *t, const struct sta_record *rec);
+
 #endif

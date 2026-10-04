@@ -6,6 +6,7 @@
 /test_parsers
 /test_eapol
 /test_oui
+/test_state
 *.pcapng
 *.22000
 *.swp

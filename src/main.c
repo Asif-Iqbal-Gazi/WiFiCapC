@@ -8,6 +8,7 @@
 #include "ipc.h"
 #include "log.h"
 #include "proto.h"
+#include "state.h"
 #include "table.h"
 
 #include <errno.h>
@@ -32,6 +33,8 @@
 #define DEFAULT_HS_STALE_SEC     30
 #define DEFAULT_HOP_INTERVAL_MS 250
 #define DEFAULT_ATTACK_INTERVAL_MS 5000
+#define DEFAULT_STATE_FILE        "/tmp/wificapc/state.bin"
+#define DEFAULT_STATE_MAX_AGE_SEC 600
 
 static const int DEFAULT_CHANNELS[]   = {1,2,3,4,5,6,7,8,9,10,11,12,13};
 static const int DEFAULT_N_CHANNELS   = 13;
@@ -51,6 +54,8 @@ struct app {
 	time_t             health_progress;  /* last time frames advanced / hop was off */
 	int                mac_rand;   /* --mac-rand applied to inject when created */
 	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
+	const char        *state_file; /* R1: recon-table persistence path ("" disables) */
+	int                state_max_age; /* R1: ignore persisted state older than this (s) */
 	time_t             started;
 };
 
@@ -477,7 +482,15 @@ static int ensure_table(struct app *a)
 	if (a->table) return 0;
 	a->table = table_create(DEFAULT_AP_TTL_SEC, DEFAULT_STA_TTL_SEC,
 	                        on_table_event, a);
-	return a->table ? 0 : -1;
+	if (!a->table) return -1;
+	/* R1: reload the airspace we persisted at the last shutdown, so a
+	 * respawn (watchdog/brcmfmac recovery) comes back aware instead of
+	 * blind. Restored records emit no events; the daemon's own attack
+	 * engine + handshake collector benefit immediately. Stale entries
+	 * age out on the first eviction tick. */
+	if (a->state_file && *a->state_file)
+		state_load(a->table, a->state_file, a->state_max_age);
+	return 0;
 }
 
 static int handle_recon_start(struct app *a, int fd, int64_t id)
@@ -1239,6 +1252,8 @@ struct opts {
 	int         attack_interval_ms;
 	int         mac_rand;
 	int         pmkid_only;
+	const char *state_file;
+	int         state_max_age;
 };
 
 static void usage(FILE *f, const char *argv0)
@@ -1266,7 +1281,10 @@ static void usage(FILE *f, const char *argv0)
 	    "      --mac-rand           Use a fresh random MAC for every assoc\n"
 	    "                           (locally-administered, unicast)\n"
 	    "      --pmkid-only         Autonomous attack sends assoc only (no\n"
-	    "                           deauth): PMKID elicitation, quieter, faster\n",
+	    "                           deauth): PMKID elicitation, quieter, faster\n"
+	    "      --state-file PATH    Recon-table persistence file\n"
+	    "                           (default: " DEFAULT_STATE_FILE "; \"\" disables)\n"
+	    "      --state-max-age S    Ignore persisted state older than S seconds\n",
 	    argv0, DEFAULT_HOP_INTERVAL_MS, DEFAULT_ATTACK_INTERVAL_MS);
 }
 
@@ -1277,6 +1295,8 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		OPT_ATTACK_INTERVAL,
 		OPT_MAC_RAND,
 		OPT_PMKID_ONLY,
+		OPT_STATE_FILE,
+		OPT_STATE_MAX_AGE,
 	};
 	static const struct option longopts[] = {
 		{ "socket",           required_argument, NULL, 's' },
@@ -1293,6 +1313,8 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		{ "attack-interval",  required_argument, NULL, OPT_ATTACK_INTERVAL },
 		{ "mac-rand",         no_argument,       NULL, OPT_MAC_RAND },
 		{ "pmkid-only",       no_argument,       NULL, OPT_PMKID_ONLY },
+		{ "state-file",       required_argument, NULL, OPT_STATE_FILE },
+		{ "state-max-age",    required_argument, NULL, OPT_STATE_MAX_AGE },
 		{ 0 },
 	};
 	int c;
@@ -1315,6 +1337,8 @@ static int parse_opts(int argc, char **argv, struct opts *o)
 		case OPT_ATTACK_INTERVAL: o->attack_interval_ms = atoi(optarg); break;
 		case OPT_MAC_RAND:        o->mac_rand = 1; break;
 		case OPT_PMKID_ONLY:      o->pmkid_only = 1; break;
+		case OPT_STATE_FILE:      o->state_file = optarg; break;
+		case OPT_STATE_MAX_AGE:   o->state_max_age = atoi(optarg); break;
 		default:  usage(stderr, argv[0]); return -1;
 		}
 	}
@@ -1395,6 +1419,8 @@ int main(int argc, char **argv)
 		.hs_dir              = DEFAULT_HS_DIR,
 		.hop_interval_ms     = DEFAULT_HOP_INTERVAL_MS,
 		.attack_interval_ms  = DEFAULT_ATTACK_INTERVAL_MS,
+		.state_file          = DEFAULT_STATE_FILE,
+		.state_max_age       = DEFAULT_STATE_MAX_AGE_SEC,
 	};
 
 	int rc = parse_opts(argc, argv, &o);
@@ -1419,6 +1445,8 @@ int main(int argc, char **argv)
 	a.health_fd  = -1;
 	a.mac_rand   = o.mac_rand;
 	a.pmkid_only = o.pmkid_only;
+	a.state_file = o.state_file;
+	a.state_max_age = o.state_max_age;
 
 	a.ipc = ipc_create(o.sock_path, o.sock_mode);
 	if (!a.ipc) {
@@ -1454,6 +1482,8 @@ int main(int argc, char **argv)
 	if (a.capture) capture_destroy(a.capture);
 	if (a.hopper)  chanhop_destroy(a.hopper);
 	if (a.hs)      handshake_destroy(a.hs);
+	if (a.table && a.state_file && *a.state_file)
+		state_save(a.table, a.state_file);   /* R1: persist for the next respawn */
 	if (a.table)   table_destroy(a.table);
 	iface_close(&a.iface);
 	ipc_destroy(a.ipc);

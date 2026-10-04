@@ -61,10 +61,11 @@ uninstall-systemd:
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc.service
 	rm -f $(DESTDIR)/etc/systemd/system/wificapc-prep.service
 
-test: $(BIN) test_parsers test_eapol test_oui
+test: $(BIN) test_parsers test_eapol test_oui test_state
 	@./test_parsers
 	@./test_eapol
 	@./test_oui
+	@./test_state
 	@./test/smoke.sh
 
 test_parsers: test/test_parsers.c $(BUILD)/radiotap.o $(BUILD)/dot11.o
@@ -76,5 +77,8 @@ test_eapol: test/test_eapol.c $(BUILD)/eapol.o $(BUILD)/dot11.o
 test_oui: test/test_oui.c $(BUILD)/oui.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
 
+test_state: test/test_state.c $(BUILD)/state.o $(BUILD)/table.o $(BUILD)/oui.o $(BUILD)/dot11.o $(BUILD)/log.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $^
+
 clean:
-	rm -rf $(BUILD) $(BIN) test_parsers test_eapol test_oui
+	rm -rf $(BUILD) $(BIN) test_parsers test_eapol test_oui test_state

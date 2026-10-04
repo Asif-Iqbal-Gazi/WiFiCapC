@@ -234,6 +234,32 @@ int table_snapshot_stas(const struct table *t, struct sta_record *out, int max)
 int table_n_aps (const struct table *t) { return t->n_aps;  }
 int table_n_stas(const struct table *t) { return t->n_stas; }
 
+/* Restore a full record from persisted state (R1). Copies every field as
+ * saved (first_seen, frames, attack bookkeeping), emits no event, and skips
+ * duplicates / a full table. The beacon cache is not restored — it's only
+ * needed for an in-flight handshake, which doesn't survive a restart. */
+void table_restore_ap(struct table *t, const struct ap_record *rec)
+{
+	if (!t || !rec || !rec->in_use) return;
+	if (find_ap(t, rec->bssid)) return;
+	struct ap_record *slot = alloc_ap(t);
+	if (!slot) return;
+	*slot = *rec;
+	slot->in_use = 1;
+	t->n_aps++;
+}
+
+void table_restore_sta(struct table *t, const struct sta_record *rec)
+{
+	if (!t || !rec || !rec->in_use) return;
+	if (find_sta(t, rec->mac)) return;
+	struct sta_record *slot = alloc_sta(t);
+	if (!slot) return;
+	*slot = *rec;
+	slot->in_use = 1;
+	t->n_stas++;
+}
+
 void table_cache_beacon(struct table *t, const uint8_t bssid[6],
                         const uint8_t *frame, size_t len)
 {
