@@ -30,20 +30,20 @@ then Tier 2 (perf), then Tier 3 (features).
       the hardcoded 1-13 default when channels=auto.
 - Files: `src/iface.c`, `include/iface.h`.
 
-### AU2 — self-managed monitor vif (Phase 0)
-- [ ] Daemon brings monitor up itself (create vif / set type), brcmfmac-safe
+### AU2 — self-managed monitor vif (Phase 0) ✅ v0.8.0
+- [x] Daemon brings monitor up itself (create vif / set type), brcmfmac-safe
       (managed netdev down first; never flip it live -> `-25`). Lets `--auto`
       run with no launcher; retires the pwnagotc launcher's vif creation
       (old A3). Needs on-pi validation.
 - Files: `src/iface.c`, `include/iface.h`.
 
-### AU3 — auto orchestrator + IPC (Phase 1)
-- [ ] `--auto` flag + `auto_start`/`auto_stop` IPC + `stats.auto`. New
+### AU3 — auto orchestrator + IPC (Phase 1) ✅ v0.8.0 (flag; runtime IPC toggle deferred)
+- [x] `--auto` flag + `auto_start`/`auto_stop` IPC + `stats.auto`. New
       `src/auto.c` sequences detect->monitor->recon->hop->attack.
 - Files: `src/auto.c`, `src/main.c`.
 
-### AU4 — channel-coupled capture-maximising engine (Phase 1)
-- [ ] Per-dwell attack rounds (inject only on the tuned channel); PMKID-first
+### AU4 — channel-coupled capture-maximising engine (Phase 1) ✅ v0.8.0
+- [x] Per-dwell attack rounds (inject only on the tuned channel); PMKID-first
       via directed assoc, targeted deauth only when a client exists + a
       reconnect listen window; stop at first usable handshake (PMKID or
       Q7-validated 4-way); adaptive dwell. Builds on P2 + chanhop.
@@ -335,6 +335,10 @@ then Tier 2 (perf), then Tier 3 (features).
 - **v0.6.12–v0.6.18** radiotap/recon/channel hardening (B1,B2,C1–C3,Q6),
   nl80211 session + snapshot perf (P1,P3), eager finalize (R5), smarter
   attack scheduling (P2), OUI vendor lookup (Q1), rx-silence watchdog (R7)
+- **v0.8.0** autonomous `--auto` mode: self-managed monitor vif (AU2),
+  orchestrator (AU3), channel-coupled PMKID-first/deauth engine (AU4) —
+  validated self-driving on hardware (hw-agnostic; brcmfmac reload stays the
+  environment's job)
 - **v0.7.2** autonomous-mode Phase 0 start: regdomain-aware channel
   auto-detection + `iface_channels` IPC (AU1); auto-mode design doc
 - **v0.7.1** hcxtools-borrowed quality: correct `.22000` MESSAGEPAIR +

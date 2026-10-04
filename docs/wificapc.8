@@ -83,6 +83,24 @@ Comma-separated channels to hop (default 1\-13).
 .TP
 .BR \-\-hop\-interval " " \fIMS\fR
 Per-channel dwell time in milliseconds (default 250).
+.SS Autonomous standalone mode
+.TP
+.B \-\-auto
+Self-driving mode: create a monitor vif on the base interface's radio
+(given by
+.BR \-i ,
+default
+.BR wlan0 ),
+auto-detect the regdomain's channels, hop them while sniffing, attack each
+channel's APs on the dwell (PMKID-first directed association, deauth
+associated clients to force the 4-way), and write
+.B .pcap
+/
+.B .22000
+artifacts — all with no external driver. The radio must present monitor
+support; on brcmfmac the driver reload needed to expose it is the
+environment's responsibility (the image's prep/launcher), not this daemon's.
+If a monitor vif already exists it is reused.
 .SS Autonomous attacks
 .TP
 .BR \-A ", " \-\-attack

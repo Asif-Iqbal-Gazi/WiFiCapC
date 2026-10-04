@@ -88,6 +88,27 @@ client exists + never wasting airtime on captured APs or off-channel injects.
   - `auto.status` event; agent detects `stats.auto`, stops orchestrating,
     subscribes → displays (channel, counts, mood) → uploads when online.
 
+## Hardware note — brcmfmac/nexmon vif creation (measured)
+
+wificapc does **not** reload any driver — it is hardware-agnostic and only
+speaks nl80211. On a normal monitor-capable adapter, `NEW_INTERFACE type
+monitor` succeeds directly and `--auto` is fully standalone.
+
+The Pi's BCM43430/nexmon firmware is the exception. Its monitor vif is
+created (per the DKMS driver's `brcmf_mon_add_vif`) by asking the *firmware*
+to add an interface (`brcmf_cfg80211_request_ap_if` → wait for
+`BRCMF_E_IF_ADD`). Measured: that firmware op returns `-EOPNOTSUPP`/`-EBUSY`
+until the module is freshly reloaded — bare `iw ... interface add ... type
+monitor` fails the same way without a reload (settle time doesn't help, a
+clean `iw del` doesn't help). That is why the image's launcher runs
+`reload_brcm` on every start.
+
+Decision: the reload stays the **environment's** job (the image launcher /
+prep service / R7 self-heal → systemd restart → launcher reload), never the
+daemon's. `--auto` therefore **reuses a monitor vif if one already exists**
+(the prepped case) and only creates one otherwise. On the Pi, deploy `--auto`
+behind the same prep the launcher already does; on a laptop it just works.
+
 ## Why it's robust for unattended standalone runs
 
 R7 rx-silence watchdog (recover a wedged radio) + R1 recon persistence

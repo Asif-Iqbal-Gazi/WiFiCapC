@@ -26,7 +26,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.7.2"
+#define WIFICAPC_VER     "0.8.0"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -996,14 +996,25 @@ struct autostart_opts {
 static int auto_prepare_vif(struct app *a, const char *base,
                             char *mon_out, size_t cap)
 {
-	struct iface tmp;
+	struct iface tmp = {0};   /* iface_open() calls iface_close() first, which
+	                           * frees tmp.nl — must be zeroed or it frees garbage. */
 	if (iface_open(&tmp, base) < 0) {
 		log_err("auto: iface_open(%s) failed — not a wifi interface?", base);
 		return -1;
 	}
-	iface_link_down(&tmp);
+
+	/* brcmfmac quirk (matches the proven launcher sequence): the managed
+	 * netdev must be UP, and settled, when the monitor vif is created —
+	 * creating it with the base down fails with -10. We then bring the base
+	 * DOWN so the monitor vif can tune the radio (the -25 invariant). */
+	iface_link_up(&tmp);
+	sleep(2);
 	snprintf(mon_out, cap, "%smon", base);
 	int rc = iface_add_monitor_vif(&tmp, mon_out);
+	if (rc >= 0) {
+		sleep(1);
+		iface_link_down(&tmp);
+	}
 	iface_close(&tmp);
 	if (rc < 0) return -1;
 	if (rc == 1)   /* we created it -> we remove it on exit */
@@ -1317,7 +1328,7 @@ static int handle_stats(struct app *a, int fd, int64_t id)
 	                                                    : a->iface.channel)) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "attack_active",
-	                          a->attack_fd >= 0)) < 0) return -1;
+	                          a->attack_fd >= 0 || a->auto_mode)) < 0) return -1;
 	pos = (size_t)r;
 	if ((r = proto_field_bool(buf, sizeof buf, pos, &first, "pmkid_only",
 	                          a->pmkid_only)) < 0) return -1;
@@ -1707,7 +1718,12 @@ int main(int argc, char **argv)
 		const char *base = o.iface ? o.iface : "wlan0";
 		char mon[16];
 		if (auto_prepare_vif(&a, base, mon, sizeof mon) < 0) {
-			log_err("--auto: monitor-vif setup on %s failed", base);
+			log_err("--auto: could not bring up a monitor vif on %s.", base);
+			log_err("--auto: the radio must present monitor support. On brcmfmac "
+			        "(Pi) the driver needs a fresh modprobe cycle first — that is "
+			        "the environment's job (the image's prep/launcher), not the "
+			        "daemon's. Prep the radio (or pre-create the monitor vif) and "
+			        "retry; on a normal adapter check that it supports monitor mode.");
 		} else {
 			struct autostart_opts ao = {
 				.iface           = mon,
