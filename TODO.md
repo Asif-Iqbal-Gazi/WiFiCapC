@@ -155,7 +155,7 @@ then Tier 2 (perf), then Tier 3 (features).
       detector from `docs/IDEAS/iface-and-driver-health.md` Phase 1.
 - Files: `src/main.c` (`on_health_timer`/`start_health_timer`).
 
-### R6 — escalate self-heal beyond the modprobe cycle (SDIO backplane wedge)
+### R6 — escalate self-heal beyond the modprobe cycle (SDIO backplane wedge) — SCRAPPED
 - [ ] **Field-observed 2026-09-24 on the Zero 2 W (v0.6.16):** the BCM43430
       wedged at the SDIO bus level — `brcmf_sdio_dpc: sdio ctrlframe tx
       failed err=-84` → `failed backplane access over SDIO, halting
@@ -211,7 +211,29 @@ then Tier 2 (perf), then Tier 3 (features).
 - Files: `src/oui.c`, `src/oui_table.h`, `include/oui.h`, `tools/gen_oui.py`,
       `src/table.c`, `src/main.c` (event emit), `test/test_oui.c`.
 
-### W1 — every capture must have a wpa-sec-uploadable artifact
+### Q7 — correct .22000 MESSAGEPAIR + replay-counter validation ✅ v0.7.1
+- [x] Borrowed from hcxtools' hcxpcapngtool. Extract the EAPOL replay
+      counter (`eapol_info.replay_counter`), track M1/M2/M3 counters per
+      pair, and compute the WPA*02 messagepair byte properly: pair bits
+      (M1+M2 / authorized M2+M3) plus **bit 7** ("replaycount not checked")
+      when we can't confirm `m1_rc==m2_rc` / `m3_rc==m2_rc+1`, so hashcat
+      nonce-error-corrects instead of trusting a stale (AP,STA)-window
+      pairing. Drop zeroed-ANONCE hashes; surface `messagepair` in the
+      pmkid/handshake events + protocol.md. Replay-counter unit test added.
+- Files: `include/eapol.h`, `src/eapol.c`, `include/handshake.h`,
+      `src/handshake.c`, `src/main.c`, `docs/protocol.md`, `test/test_eapol.c`.
+
+### Q8 — scheduled OUI vendor-table refresh ✅ v0.7.1
+- [x] Monthly (+ on-demand) GitHub Action re-downloads the IEEE MA-L
+      registry, regenerates `src/oui_table.h` via `tools/gen_oui.py`,
+      builds+tests, and opens a PR when it changed — keeps Q1's embedded
+      vendor data fresh without hand-updates.
+- Files: `.github/workflows/oui-refresh.yml`.
+
+### W1 — every capture must have a wpa-sec-uploadable artifact — SCRAPPED
+- Parked by decision: the PMKID-only route needs on-hardware validation
+  (brcmfmac PMKIDs are `KDV:0 AKM not supported`). hcxtools' PMKID
+  acceptance criteria are the reference if revived.
 - [ ] wpa-sec accepts pcap/pcapng only (never `.22000`; it runs
       hcxpcapngtool on the upload). We keep `.22000` for offline hashcat
       and already save a per-pair `.pcap` for **4-way** captures (v0.6.8)
@@ -227,7 +249,7 @@ then Tier 2 (perf), then Tier 3 (features).
       it explicit rather than silently dropping.
 - Files: `src/handshake.c` (daemon side), pwnagotc `wpa-sec.py` (if (b)).
 
-### Q2 — pcapng output instead of pcap
+### Q2 — pcapng output instead of pcap — SCRAPPED
 - [ ] Re-implement the writer as pcapng (SHB + IDB + EPB). Directly serves
       the wpa-sec goal: drops hcxpcapngtool's "limited dump file format
       detected" warning and is the format modern tooling expects; carries
@@ -241,7 +263,7 @@ then Tier 2 (perf), then Tier 3 (features).
       never wait on the 4-way. Faster target cycling.
 - Files: `src/main.c`, `src/inject.c`.
 
-### R4 — WPA3 SAE handshake support
+### R4 — WPA3 SAE handshake support — SCRAPPED
 - [ ] Recognize SAE Commit/Confirm; pick a hashcat 22000 SAE mode. The
       current fixed 95-byte key-descriptor offsets in `eapol.c` assume
       classic WPA2 — SAE needs its own path.
@@ -269,6 +291,8 @@ then Tier 2 (perf), then Tier 3 (features).
 - **v0.6.12–v0.6.18** radiotap/recon/channel hardening (B1,B2,C1–C3,Q6),
   nl80211 session + snapshot perf (P1,P3), eager finalize (R5), smarter
   attack scheduling (P2), OUI vendor lookup (Q1), rx-silence watchdog (R7)
+- **v0.7.1** hcxtools-borrowed quality: correct `.22000` MESSAGEPAIR +
+  replay-counter validation (Q7), scheduled OUI-table refresh CI (Q8)
 - **v0.7.0** dynamic handshake-pair table (R3), recon-table persistence
   (R1), PMKID-only attack mode (S2), and the X-series polish: man page
   (X1), protocol.md (X2), `--config` file (X3), subscribe/unsubscribe IPC
