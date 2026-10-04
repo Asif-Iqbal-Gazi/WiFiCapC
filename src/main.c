@@ -83,6 +83,25 @@ static void install_signals(void)
 
 /* ---- emit helpers --------------------------------------------------------- */
 
+/* Map an event tag (what we emit) or a subscription token (what a client
+ * names in subscribe/unsubscribe) to its IPC_EVT_* bit(s). Unknown emit
+ * tags fall back to IPC_EVT_ALL so a new event is never silently hidden;
+ * unknown subscription tokens return 0 so the caller can reject them. */
+static uint32_t ipc_evt_for_token(const char *t, int for_emit)
+{
+	if (!strcmp(t, "ap.new"))        return IPC_EVT_AP_NEW;
+	if (!strcmp(t, "ap.lost"))       return IPC_EVT_AP_LOST;
+	if (!strcmp(t, "sta.new"))       return IPC_EVT_STA_NEW;
+	if (!strcmp(t, "sta.lost"))      return IPC_EVT_STA_LOST;
+	if (!strcmp(t, "iface.channel")) return IPC_EVT_IFACE;
+	if (!strcmp(t, "iface.mode"))    return IPC_EVT_IFACE;
+	if (!strcmp(t, "iface"))         return IPC_EVT_IFACE;
+	if (!strcmp(t, "handshake") || !strncmp(t, "handshake.", 10) ||
+	    !strcmp(t, "pmkid.captured")) return IPC_EVT_HANDSHAKE;
+	if (!strcmp(t, "all") || !strcmp(t, "*")) return IPC_EVT_ALL;
+	return for_emit ? IPC_EVT_ALL : 0u;
+}
+
 static int emit_event_iface_channel(struct app *a, int channel, int freq)
 {
 	char  buf[256];
@@ -105,7 +124,7 @@ static int emit_event_iface_channel(struct app *a, int channel, int freq)
 	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 
-	return ipc_broadcast(a->ipc, buf, pos);
+	return ipc_broadcast_event(a->ipc, IPC_EVT_IFACE, buf, pos);
 }
 
 static int emit_event_iface_mode(struct app *a, enum iface_mode mode)
@@ -124,7 +143,7 @@ static int emit_event_iface_mode(struct app *a, enum iface_mode mode)
 	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 
-	return ipc_broadcast(a->ipc, buf, pos);
+	return ipc_broadcast_event(a->ipc, IPC_EVT_IFACE, buf, pos);
 }
 
 static int reply_ok_empty(struct ipc *s, int fd, int64_t id)
@@ -403,7 +422,7 @@ static int emit_ap_event(struct app *a, const char *tag, const struct ap_record 
 	pos = (size_t)r;
 	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
-	return ipc_broadcast(a->ipc, buf, pos);
+	return ipc_broadcast_event(a->ipc, ipc_evt_for_token(tag, 1), buf, pos);
 }
 
 static int emit_sta_event(struct app *a, const char *tag, const struct sta_record *sta)
@@ -434,7 +453,7 @@ static int emit_sta_event(struct app *a, const char *tag, const struct sta_recor
 	pos = (size_t)r;
 	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
-	return ipc_broadcast(a->ipc, buf, pos);
+	return ipc_broadcast_event(a->ipc, ipc_evt_for_token(tag, 1), buf, pos);
 }
 
 static void on_table_event(enum table_event evt,
@@ -669,7 +688,7 @@ static int emit_hs_event(struct app *a, const char *tag,
 	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
 	pos = (size_t)r;
 
-	return ipc_broadcast(a->ipc, buf, pos);
+	return ipc_broadcast_event(a->ipc, IPC_EVT_HANDSHAKE, buf, pos);
 }
 
 /* Called by handshake.c on every state-machine transition we report. */
@@ -980,6 +999,37 @@ static int handle_set_pmkid_only(struct app *a, int fd, int64_t id, const char *
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+/* X4: parse the comma/space-separated `events` arg into an IPC_EVT_* mask.
+ * `*any_unknown` is set if a token didn't resolve. */
+static uint32_t parse_event_list(const char *csv, int *any_unknown)
+{
+	char      tmp[256];
+	uint32_t  mask = 0;
+	snprintf(tmp, sizeof tmp, "%s", csv);
+	for (char *tok = strtok(tmp, ", \t"); tok; tok = strtok(NULL, ", \t")) {
+		uint32_t b = ipc_evt_for_token(tok, 0);
+		if (b) mask |= b;
+		else if (any_unknown) *any_unknown = 1;
+	}
+	return mask;
+}
+
+static int handle_subscribe(struct app *a, int fd, int64_t id,
+                            const char *args, int add)
+{
+	char ev[256];
+	if (!args || proto_args_get_str(args, "events", ev, sizeof ev) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'events'");
+	int unknown = 0;
+	uint32_t mask = parse_event_list(ev, &unknown);
+	if (!mask)
+		return reply_error(a->ipc, fd, id, "no known events");
+	if (add) ipc_client_subscribe(a->ipc, fd, mask);
+	else     ipc_client_unsubscribe(a->ipc, fd, mask);
+	(void)unknown; /* unknown-but-some-known is tolerated */
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 /* ---- frame injection (deauth / assoc) ------------------------------------ */
 
 static int ensure_inject(struct app *a)
@@ -1166,6 +1216,8 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_mac_rand") == 0) return handle_set_mac_rand(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_pmkid_only") == 0) return handle_set_pmkid_only(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "subscribe")    == 0) return handle_subscribe(a, fd, req.id, req.args_raw, 1);
+	if (strcmp(req.cmd, "unsubscribe")  == 0) return handle_subscribe(a, fd, req.id, req.args_raw, 0);
 
 	return reply_error(a->ipc, fd, req.id, "unknown command");
 }

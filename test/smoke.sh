@@ -152,4 +152,17 @@ assert_match "$resp" '"ok":true'         "set_pmkid_only enable → ok"
 resp=$(run '{"id":61,"cmd":"set_pmkid_only"}')
 assert_match "$resp" "missing 'enabled'" "set_pmkid_only without args → error"
 
+# X4 — subscribe / unsubscribe
+resp=$(run '{"id":70,"cmd":"unsubscribe","args":{"events":"iface.channel,iface.mode"}}')
+assert_match "$resp" '"ok":true'         "unsubscribe iface events → ok"
+
+resp=$(run '{"id":71,"cmd":"subscribe","args":{"events":"ap.new sta.new handshake.done"}}')
+assert_match "$resp" '"ok":true'         "subscribe ap/sta/handshake → ok"
+
+resp=$(run '{"id":72,"cmd":"subscribe","args":{"events":"bogus.event"}}')
+assert_match "$resp" 'no known events'   "subscribe unknown-only → error"
+
+resp=$(run '{"id":73,"cmd":"subscribe"}')
+assert_match "$resp" "missing 'events'"  "subscribe without args → error"
+
 echo "all good"

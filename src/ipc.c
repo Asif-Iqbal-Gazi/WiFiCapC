@@ -22,6 +22,7 @@
 
 struct client {
 	int      fd;
+	uint32_t subs;         /* IPC_EVT_* bitmask of events this client wants */
 	char     in[IN_BUF_CAP];
 	size_t   in_len;
 	char    *out;          /* malloc'd ring */
@@ -204,6 +205,7 @@ static void on_listen_readable(struct ipc *s)
 			continue;
 		}
 		c->fd     = fd;
+		c->subs   = IPC_EVT_ALL;   /* default: everything, until narrowed */
 		c->in_len = 0;
 		struct epoll_event ev = {
 			.events  = EPOLLIN | EPOLLRDHUP,
@@ -394,6 +396,37 @@ int ipc_broadcast(struct ipc *s, const char *line, size_t len)
 		}
 	}
 	return sent;
+}
+
+int ipc_broadcast_event(struct ipc *s, uint32_t mask,
+                        const char *line, size_t len)
+{
+	int sent = 0;
+	for (size_t i = 0; i < MAX_CLIENTS; i++) {
+		if (s->clients[i].fd < 0) continue;
+		if (!(s->clients[i].subs & mask)) continue;
+		if (client_outbox_push(s, &s->clients[i], line, len) == 0) {
+			client_drain_outbox(s, &s->clients[i]);
+			sent++;
+		}
+	}
+	return sent;
+}
+
+int ipc_client_subscribe(struct ipc *s, int client_fd, uint32_t bits)
+{
+	struct client *c = client_find(s, client_fd);
+	if (!c) return -1;
+	c->subs |= bits;
+	return 0;
+}
+
+int ipc_client_unsubscribe(struct ipc *s, int client_fd, uint32_t bits)
+{
+	struct client *c = client_find(s, client_fd);
+	if (!c) return -1;
+	c->subs &= ~bits;
+	return 0;
 }
 
 int ipc_add_fd(struct ipc *s, int fd, uint32_t events,
