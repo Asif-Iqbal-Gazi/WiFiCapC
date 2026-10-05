@@ -155,6 +155,12 @@ Example — the agent dropping the 4/sec channel chatter it ignores:
 | `pmkid.captured` | HANDSHAKE | `ap_bssid`, `sta_mac`, `channel`, `rssi`, `msg_seen`, `pmkid`, `messagepair` |
 | `handshake.captured` | HANDSHAKE | one or more 4-way frames seen (same fields) |
 | `handshake.done` | HANDSHAKE | pair retired; adds `pcap_path`, `hash22000_path?` |
+| `attack.assoc` | ATTACK | `--auto` sent an association (PMKID elicitation): `ap_bssid`, `ssid?`, `vendor?`, `channel` |
+| `attack.deauth` | ATTACK | `--auto` deauthed a client: `ap_bssid`, `sta_mac`, `vendor?`, `channel` |
+
+Attack events are emitted **once per channel round** (a representative target,
+not one per frame) to stay light; a UI client uses them to show live attack
+activity. Category token: `attack` (or `attack.assoc` / `attack.deauth`).
 
 `messagepair` is the computed hashcat WPA\*02 message-pair byte: low 3 bits are
 the pair type (`0`=M1+M2, `2`=M2+M3 authorized), and **bit 7 (0x80)** is set

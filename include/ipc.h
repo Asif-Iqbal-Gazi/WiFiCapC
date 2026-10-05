@@ -58,6 +58,7 @@ enum {
 	IPC_EVT_STA_LOST  = 1u << 3,
 	IPC_EVT_HANDSHAKE = 1u << 4,  /* handshake.*/ /* + pmkid.captured */
 	IPC_EVT_IFACE     = 1u << 5,  /* iface.channel + iface.mode */
+	IPC_EVT_ATTACK    = 1u << 6,  /* attack.assoc + attack.deauth (--auto) */
 };
 /* Macro, not an enumerator: 0xffffffff exceeds int range (ISO C < C23). */
 #define IPC_EVT_ALL 0xffffffffu

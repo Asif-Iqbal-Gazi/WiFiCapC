@@ -27,7 +27,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.3"
+#define WIFICAPC_VER     "0.8.4"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -109,6 +109,7 @@ static uint32_t ipc_evt_for_token(const char *t, int for_emit)
 	if (!strcmp(t, "iface"))         return IPC_EVT_IFACE;
 	if (!strcmp(t, "handshake") || !strncmp(t, "handshake.", 10) ||
 	    !strcmp(t, "pmkid.captured")) return IPC_EVT_HANDSHAKE;
+	if (!strcmp(t, "attack") || !strncmp(t, "attack.", 7)) return IPC_EVT_ATTACK;
 	if (!strcmp(t, "all") || !strcmp(t, "*")) return IPC_EVT_ALL;
 	return for_emit ? IPC_EVT_ALL : 0u;
 }
@@ -508,6 +509,47 @@ static int emit_sta_event(struct app *a, const char *tag, const struct sta_recor
 	return ipc_broadcast_event(a->ipc, ipc_evt_for_token(tag, 1), buf, pos);
 }
 
+/* Emit a lightweight attack event so a UI client (the agent) can show what
+ * the --auto engine is attacking. One representative event per channel round
+ * (see attack_on_channel) keeps the IPC light. `ssid` is the AP SSID (NUL-
+ * terminated) or NULL; `sta_mac` is set for deauth, NULL for assoc; `vendor`
+ * is the AP vendor (assoc) or STA vendor (deauth). */
+static int emit_attack_event(struct app *a, const char *tag,
+                             const uint8_t ap_bssid[6], const char *ssid,
+                             const uint8_t *sta_mac, const char *vendor,
+                             int channel)
+{
+	char   buf[512];
+	size_t pos = 0;
+	int    first = 1;
+	ssize_t r;
+	char   bssid_s[18], sta_s[18];
+	dot11_mac_str(ap_bssid, bssid_s);
+
+	if ((r = proto_event_begin(buf, sizeof buf, pos, tag)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ap_bssid", bssid_s)) < 0) return -1;
+	pos = (size_t)r;
+	if (ssid && *ssid) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "ssid", ssid)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if (sta_mac) {
+		dot11_mac_str(sta_mac, sta_s);
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "sta_mac", sta_s)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if (vendor && *vendor) {
+		if ((r = proto_field_str(buf, sizeof buf, pos, &first, "vendor", vendor)) < 0) return -1;
+		pos = (size_t)r;
+	}
+	if ((r = proto_field_int(buf, sizeof buf, pos, &first, "channel", channel)) < 0) return -1;
+	pos = (size_t)r;
+	if ((r = proto_event_end(buf, sizeof buf, pos)) < 0) return -1;
+	pos = (size_t)r;
+	return ipc_broadcast_event(a->ipc, IPC_EVT_ATTACK, buf, pos);
+}
+
 static void on_table_event(enum table_event evt,
                            const struct ap_record  *ap,
                            const struct sta_record *sta,
@@ -874,6 +916,9 @@ static void attack_on_channel(struct app *a, int channel)
 			continue;
 		const char *ssid = aps[i].ssid_len ? aps[i].ssid : NULL;
 		inject_assoc(a->inject, aps[i].bssid, ssid, aps[i].ssid_len);
+		if (assoc_sent == 0)   /* one representative event per round (UI) */
+			emit_attack_event(a, "attack.assoc", aps[i].bssid, ssid,
+			                  NULL, aps[i].vendor, channel);
 		table_note_ap_attacked(a->table, aps[i].bssid, now);
 		assoc_sent++;
 	}
@@ -889,6 +934,9 @@ static void attack_on_channel(struct app *a, int channel)
 			if (stas[i].last_attack && now - stas[i].last_attack < ATTACK_COOLDOWN_SEC)
 				continue;
 			inject_deauth(a->inject, stas[i].ap_bssid, stas[i].mac, 2, 7);
+			if (deauth_sent == 0)   /* one representative event per round (UI) */
+				emit_attack_event(a, "attack.deauth", stas[i].ap_bssid, NULL,
+				                  stas[i].mac, stas[i].vendor, channel);
 			table_note_sta_attacked(a->table, stas[i].mac, now);
 			deauth_sent++;
 		}
