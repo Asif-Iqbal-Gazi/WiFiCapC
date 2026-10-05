@@ -162,6 +162,12 @@ assert_match "$resp" '"ok":true'         "set_attack disable → ok"
 resp=$(run '{"id":65,"cmd":"set_attack"}')
 assert_match "$resp" "missing 'enabled'" "set_attack without args → error"
 
+# AU7 — auto_start/auto_stop (no --auto here, so start → error; stop → ok)
+resp=$(run '{"id":66,"cmd":"auto_stop"}')
+assert_match "$resp" '"ok":true'         "auto_stop → ok"
+resp=$(run '{"id":67,"cmd":"auto_start"}')
+assert_match "$resp" 'auto not available' "auto_start without --auto → error"
+
 # X4 — subscribe / unsubscribe
 resp=$(run '{"id":70,"cmd":"unsubscribe","args":{"events":"iface.channel,iface.mode"}}')
 assert_match "$resp" '"ok":true'         "unsubscribe iface events → ok"

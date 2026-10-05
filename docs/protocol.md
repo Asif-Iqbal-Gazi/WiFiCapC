@@ -105,6 +105,8 @@ Typical bring-up order: `iface_set` → `monitor_on` → `recon_start` →
 | `set_mac_rand` | `{enabled: 0\|1}` | Fresh random MAC per assoc (S1). |
 | `set_pmkid_only` | `{enabled: 0\|1}` | Autonomous attack sends assoc only, no deauth (S2). |
 | `set_attack` | `{enabled: 0\|1}` | Gate the `--auto` per-channel attack at runtime. Capture + hopping are unaffected; only the active assoc/deauth turns on/off (e.g. agent manual mode → off). |
+| `auto_stop` | — | Stop `--auto` self-driving (hop + attack) without dropping monitor/capture, handing channel control to the client (AU7; agent-driven mode). `stats.auto` → false. |
+| `auto_start` | — | Resume `--auto` self-driving (re-hop the startup channels; attack per `set_attack`). Errors if the daemon wasn't started with `--auto`. |
 
 ### Handshakes
 

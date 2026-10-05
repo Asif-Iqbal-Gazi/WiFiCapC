@@ -27,7 +27,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.4"
+#define WIFICAPC_VER     "0.8.5"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -55,8 +55,13 @@ struct app {
 	time_t             health_progress;  /* last time frames advanced / hop was off */
 	int                mac_rand;   /* --mac-rand applied to inject when created */
 	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
-	int                auto_mode;  /* AU3: self-driving --auto mode */
+	int                auto_mode;  /* AU3: self-driving --auto mode (hop+attack by daemon) */
 	int                attack_enabled; /* --auto: gate the per-channel attack (set_attack) */
+	/* AU7: channels/interval captured at autostart so auto_start can resume
+	 * the self-hop after an auto_stop handed channel control to a client. */
+	int                auto_channels[CHANHOP_MAX_CHANNELS];
+	int                auto_n_channels;
+	int                auto_hop_ms;
 	char               auto_vif[16]; /* AU2: monitor vif we created ("" = none) */
 	time_t             status_last;  /* AU5: last periodic --auto status log */
 	const char        *state_file; /* R1: recon-table persistence path ("" disables) */
@@ -1153,6 +1158,11 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 			log_err("autostart: chanhop_start failed");
 			return -1;
 		}
+		/* AU7: remember for auto_start (resume after an auto_stop). */
+		int nkeep = n_channels < CHANHOP_MAX_CHANNELS ? n_channels : CHANHOP_MAX_CHANNELS;
+		for (int i = 0; i < nkeep; i++) a->auto_channels[i] = channels[i];
+		a->auto_n_channels = nkeep;
+		a->auto_hop_ms     = o->hop_interval_ms;
 		log_info("autostart: hopping %d channels at %dms",
 		         n_channels, o->hop_interval_ms);
 	}
@@ -1246,6 +1256,36 @@ static int handle_set_attack(struct app *a, int fd, int64_t id, const char *args
 	 * attacks on when it switches to auto. */
 	a->attack_enabled = !!en;
 	log_info("set_attack: autonomous attack %s", a->attack_enabled ? "on" : "off");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+/* AU7: stop the --auto self-driving (hop + per-channel attack) WITHOUT
+ * dropping monitor/capture, handing channel control to a client (pwnagotc
+ * "Agent" mode, where the agent drives recon/hop/attack itself). */
+static int handle_auto_stop(struct app *a, int fd, int64_t id)
+{
+	if (a->hopper && chanhop_is_running(a->hopper))
+		chanhop_stop(a->hopper);
+	a->auto_mode = 0;                 /* on_chanhop_tick no longer attacks */
+	log_info("auto_stop: self-driving off (capture stays up; client drives)");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
+/* AU7: resume the --auto self-driving (re-hop the channels detected at
+ * startup; attack per set_attack). */
+static int handle_auto_start(struct app *a, int fd, int64_t id)
+{
+	if (a->auto_n_channels <= 0)
+		return reply_error(a->ipc, fd, id, "auto not available (daemon not started with --auto)");
+	if (ensure_hopper(a) < 0)
+		return reply_error(a->ipc, fd, id, "hopper init failed");
+	if (!chanhop_is_running(a->hopper) &&
+	    chanhop_start(a->hopper, a->auto_channels, a->auto_n_channels,
+	                  a->auto_hop_ms) < 0)
+		return reply_error(a->ipc, fd, id, "chanhop_start failed");
+	a->auto_mode = 1;
+	log_info("auto_start: self-driving on (%d channels, attack %s)",
+	         a->auto_n_channels, a->attack_enabled ? "on" : "off");
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
@@ -1471,6 +1511,8 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "set_mac_rand") == 0) return handle_set_mac_rand(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_pmkid_only") == 0) return handle_set_pmkid_only(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_attack")   == 0) return handle_set_attack(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "auto_start")   == 0) return handle_auto_start(a, fd, req.id);
+	if (strcmp(req.cmd, "auto_stop")    == 0) return handle_auto_stop(a, fd, req.id);
 	if (strcmp(req.cmd, "subscribe")    == 0) return handle_subscribe(a, fd, req.id, req.args_raw, 1);
 	if (strcmp(req.cmd, "unsubscribe")  == 0) return handle_subscribe(a, fd, req.id, req.args_raw, 0);
 

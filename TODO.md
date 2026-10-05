@@ -55,9 +55,17 @@ then Tier 2 (perf), then Tier 3 (features).
       output dir, filters).
 - Files: `src/auto.c`, `src/main.c`.
 
-### AU6 — pwnagotc thin consumer (Phase 3, agent repo)
-- [ ] Agent detects `stats.auto`, stops orchestrating, subscribes to events
-      + a new `auto.status`, displays (channel/counts/mood), uploads online.
+### AU6 — pwnagotc thin consumer (Phase 3, agent repo) ✅ (v3.0.19–v3.0.24)
+- [x] Agent consumes stats.auto + ap/sta/handshake + attack.assoc/deauth
+      events, displays + uploads; set_attack toggles the attack; AU7 next.
+
+### AU7 — runtime self-driving toggle (auto_start / auto_stop) ✅ v0.8.5
+- [x] IPC to start/stop the `--auto` self-hop+attack at runtime without
+      dropping monitor/capture, so a client can hand channel control to the
+      agent (pwnagotc "Agent" mode) and take it back ("Engine" mode). Add
+      `auto_driving` to `stats`. Completes AU3's deferred runtime toggle;
+      consumed by pwnagotc's tri-mode (Manual/Agent/Engine).
+- Files: `src/main.c`.
 
 ---
 
@@ -335,6 +343,8 @@ then Tier 2 (perf), then Tier 3 (features).
 - **v0.6.12–v0.6.18** radiotap/recon/channel hardening (B1,B2,C1–C3,Q6),
   nl80211 session + snapshot perf (P1,P3), eager finalize (R5), smarter
   attack scheduling (P2), OUI vendor lookup (Q1), rx-silence watchdog (R7)
+- **v0.8.5** `auto_start`/`auto_stop` IPC — runtime self-driving toggle
+  (AU7; enables pwnagotc Agent mode to take channel control)
 - **v0.8.4** `attack.assoc`/`attack.deauth` events — surface the --auto
   attack activity (one representative per channel round) for a UI client
 - **v0.8.3** `set_attack` IPC — gate the `--auto` attack at runtime
