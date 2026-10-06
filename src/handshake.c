@@ -45,6 +45,11 @@ struct hs_pair {
 	uint8_t  m2_eapol[M2_EAPOL_MAX]; /* M2 EAPOL packet, MIC field zeroed */
 	size_t   m2_eapol_len;
 	int      have_m2;
+	/* A (ap-less): impersonated ESSID for a rogue pair. Its fabricated BSSID
+	 * isn't in the recon table, so the .22000 SSID must come from here. */
+	char     essid[33];
+	uint8_t  essid_len;
+	int      have_essid;
 	/* Replay counters per message, for MESSAGEPAIR validation (Q7). A clean
 	 * M1+M2 pair shares a counter; M3 is M2's + 1. If we can't confirm the
 	 * relationship we flag the hash so hashcat runs nonce-error-corrections
@@ -197,11 +202,16 @@ static void write_hash22000(struct handshake *h, struct hs_pair *p)
 	snprintf(p->hash22000_path, sizeof p->hash22000_path,
 	         "%s/%s_%s.22000", h->dir, ap_hex, sta_hex);
 
-	/* SSID hex from recon table; empty string if unknown. */
+	/* SSID hex: for an ap-less rogue pair use the ESSID we impersonated;
+	 * otherwise the recon table; empty string if unknown. */
 	char ssid_hex[65] = "";
-	const struct ap_record *apr = table_find_ap(h->table, p->ap_bssid);
-	if (apr && apr->ssid_len > 0)
-		hex_encode(ssid_hex, (const uint8_t *)apr->ssid, apr->ssid_len);
+	if (p->have_essid && p->essid_len > 0) {
+		hex_encode(ssid_hex, (const uint8_t *)p->essid, p->essid_len);
+	} else {
+		const struct ap_record *apr = table_find_ap(h->table, p->ap_bssid);
+		if (apr && apr->ssid_len > 0)
+			hex_encode(ssid_hex, (const uint8_t *)apr->ssid, apr->ssid_len);
+	}
 
 	if (!hs_dir_ready(h)) {
 		p->hash22000_path[0] = '\0';
@@ -440,6 +450,41 @@ int handshake_delete_pair(const struct handshake *h,
 	return removed;
 }
 int         handshake_n_pairs(const struct handshake *h) { return h->n_pairs; }
+
+/* A (ap-less): register the EAPOL M1 we just injected for (bssid, client) so
+ * the client's M2 — arriving via the normal capture path — completes the pair
+ * into a .22000. We supply the ANonce (ours) and the impersonated ESSID, since
+ * the fabricated BSSID is not a real AP in the recon table. */
+void handshake_note_injected_m1(struct handshake *h,
+                                const uint8_t bssid[6], const uint8_t client[6],
+                                const uint8_t anonce[32],
+                                const char *essid, uint8_t essid_len, int channel)
+{
+	if (!h || !bssid || !client || !anonce) return;
+	struct hs_pair *p = find_pair(h, bssid, client);
+	if (!p) {
+		p = alloc_pair(h);
+		if (!p) return;
+		memset(p, 0, sizeof *p);
+		p->in_use = 1;
+		memcpy(p->ap_bssid, bssid, 6);
+		memcpy(p->sta_mac,  client, 6);
+		p->first_seen = time(NULL);
+		h->n_pairs++;
+	}
+	p->channel   = channel;
+	p->last_seen = time(NULL);
+	memcpy(p->anonce, anonce, 32);
+	p->have_anonce = 1;
+	p->m1_rc = 1; p->have_m1_rc = 1;   /* our injected M1 used replay counter 1 */
+	p->msg_bitmap |= 1u;               /* M1 seen */
+	if (essid && essid_len > 0 && essid_len <= 32) {
+		memcpy(p->essid, essid, essid_len);
+		p->essid[essid_len] = '\0';
+		p->essid_len  = essid_len;
+		p->have_essid = 1;
+	}
+}
 
 void handshake_observe(struct handshake *h,
                        const uint8_t *frame, size_t frame_len,

@@ -222,7 +222,7 @@ From a source-level study of hcxdumptool 7.1.2's default attack model.
 - [x] **C-lite — attack-on-new-target.** Fire one assoc/deauth the instant a
       new AP/STA appears (`on_table_event` → `attack_new_{ap,sta}`), silent, for
       fast first-contact; the periodic path's cooldown prevents double-hits. ✅ v0.8.6
-- [~] **A — ap-less / rogue-AP M2 client attack** (the big one, in progress).
+- [x] **A — ap-less / rogue-AP M2 client attack** (the big one). ✅ v0.9.0
       Respond to client probe requests impersonating the probed ESSID →
       assoc/auth responses → inject our own EAPOL M1 → capture the client's M2
       → feed the .22000 pipeline. OFF by default (opt-in). See
@@ -237,9 +237,9 @@ From a source-level study of hcxdumptool 7.1.2's default attack model.
     - [~] Increment 3: dot11 classify AUTH/ASSOC-REQ ✅ (unit-tested); still
           TODO — inject auth/assoc responses + EAPOL M1 (fresh ANONCE) + the
           apless state machine (PROBED→auth→assoc→M1_SENT). Validate on the Pi.
-    - [ ] Increment 4: capture the client's M2 — register our injected M1 with
-          the handshake collector so the pair finalises (the subtle part; ASAN
-          + a frame-level unit test, validated on the Pi).
+    - [x] Increment 4: handshake_note_injected_m1 pre-seeds the pair with our
+          ANonce + impersonated ESSID; the client's M2 (normal capture path)
+          finalises the .22000. write_hash22000 prefers the rogue ESSID.
 
 ---
 

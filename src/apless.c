@@ -160,6 +160,10 @@ void apless_on_frame(struct apless *a, struct inject *inject,
 		 * (increment 4). */
 		apless_rand(r->anonce, sizeof r->anonce);
 		inject_eapol_m1(inject, r->bssid, r->client, r->anonce);
+		/* Register our M1 so the client's M2 (arriving via the normal capture
+		 * path) finalises the pair into a .22000 with our ANonce + the ESSID. */
+		handshake_note_injected_m1(a->hs, r->bssid, r->client, r->anonce,
+		                           r->essid, r->essid_len, channel);
 		r->state = ROGUE_M1_SENT;
 		log_debug("apless: M1 sent to %02x:..:%02x impersonating '%s'",
 		          r->client[0], r->client[5], r->essid);

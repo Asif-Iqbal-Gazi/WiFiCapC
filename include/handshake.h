@@ -81,6 +81,13 @@ void handshake_observe(struct handshake *h,
                        const struct dot11_info *d,
                        int channel, int rssi);
 
+/* A (ap-less M2 attack): register an injected EAPOL M1 so the client's M2
+ * finalises the pair. Supplies our ANonce + the impersonated ESSID. */
+void handshake_note_injected_m1(struct handshake *h,
+                                const uint8_t bssid[6], const uint8_t client[6],
+                                const uint8_t anonce[32],
+                                const char *essid, uint8_t essid_len, int channel);
+
 /* Periodic eviction of stale records; idempotent. */
 void handshake_tick(struct handshake *h, time_t now);
 
