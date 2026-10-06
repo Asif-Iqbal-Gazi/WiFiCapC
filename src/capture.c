@@ -36,7 +36,17 @@ struct capture {
 	uint8_t        rx[RX_BUF_SIZE];
 	uint64_t       frames_total;
 	uint64_t       frames_dropped;
+
+	capture_frame_fn frame_cb;      /* optional app hook (ap-less attack) */
+	void            *frame_cb_user;
 };
+
+void capture_set_frame_cb(struct capture *c, capture_frame_fn cb, void *user)
+{
+	if (!c) return;
+	c->frame_cb      = cb;
+	c->frame_cb_user = user;
+}
 
 struct capture *capture_create(struct iface *iface, struct table *table,
                                struct handshake *hs, struct ipc *ipc)
@@ -105,6 +115,9 @@ static void process_frame(struct capture *c, size_t n)
 	case DOT11_FRAME_PROBE_REQ:
 		if (recon_ok)
 			table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, NULL);
+		/* A: let the ap-less attack answer directed probe-requests. */
+		if (c->frame_cb)
+			c->frame_cb(&d, c->rx, n, channel, c->frame_cb_user);
 		break;
 	case DOT11_FRAME_DATA:
 		if (recon_ok)

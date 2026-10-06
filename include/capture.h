@@ -7,6 +7,7 @@
 #include "table.h"
 
 #include <stdint.h>
+#include <stddef.h>
 
 /*
  * Raw 802.11 capture via AF_PACKET on a monitor-mode interface.
@@ -19,7 +20,17 @@
  */
 
 struct capture;
-struct ipc;     /* forward decl from ipc.h */
+struct ipc;          /* forward decl from ipc.h */
+struct dot11_info;   /* forward decl from dot11.h */
+
+/* Optional hook: fired for received frames the app wants to react to (the
+ * ap-less M2 attack uses it for probe-requests etc.). Off unless set. The
+ * frame is already parsed into `d`; `raw`/`raw_len` is the radiotap+802.11
+ * blob; `channel` is the tuned channel. Must not block. */
+typedef void (*capture_frame_fn)(const struct dot11_info *d,
+                                 const uint8_t *raw, size_t raw_len,
+                                 int channel, void *user);
+void capture_set_frame_cb(struct capture *c, capture_frame_fn cb, void *user);
 
 struct capture *capture_create(struct iface     *iface,
                                struct table     *table,

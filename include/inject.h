@@ -59,4 +59,13 @@ int inject_deauth(struct inject *i, const uint8_t bssid[6],
 int inject_assoc(struct inject *i, const uint8_t bssid[6],
                  const char *ssid, uint8_t ssid_len);
 
+/*
+ * A (ap-less M2 attack): send a rogue-AP Probe Response impersonating `ssid`
+ * from the fabricated `bssid` to the `client` that probed for it, advertising
+ * WPA2-PSK on `channel`. Returns 0 on success. See src/apless.c.
+ */
+int inject_probe_response(struct inject *i, const uint8_t bssid[6],
+                          const uint8_t client[6],
+                          const char *ssid, uint8_t ssid_len, int channel);
+
 #endif

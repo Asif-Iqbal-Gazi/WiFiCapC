@@ -230,8 +230,10 @@ From a source-level study of hcxdumptool 7.1.2's default attack model.
     - [x] Foundation: `apless` module (src/apless.c, include/apless.h) with the
           per-client rogue-session table + TTL eviction; `set_apless` IPC gate
           (OFF by default, lazily builds the responder); smoke-tested; documented.
-    - [ ] Increment 2: `inject_probe_response` + capture→app mgmt-frame hook;
-          directed probe-req → rogue proberesp (impersonate the ESSID).
+    - [x] Increment 2: `inject_probe_response` (rogue AP answering a probe) +
+          a `capture_set_frame_cb` hook; a directed probe-req now creates a
+          rogue session (fabricated BSSID) and answers it, impersonating the
+          probed ESSID. Per-session cooldown; wildcard probes skipped (phase 2).
     - [ ] Increment 3: dot11 classify AUTH/ASSOC-REQ; auth/assoc responses +
           inject EAPOL M1 (fresh ANONCE per session).
     - [ ] Increment 4: capture the client's M2 — register our injected M1 with

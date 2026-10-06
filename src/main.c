@@ -608,6 +608,18 @@ static void on_table_event(enum table_event evt,
 	}
 }
 
+/* A: capture frame hook — route received frames to the ap-less responder when
+ * the attack is enabled. ensure_inject so the rogue replies have a live TX
+ * path; inject is passed per-call so it's always current. */
+static void on_capture_frame(const struct dot11_info *d, const uint8_t *raw,
+                             size_t raw_len, int channel, void *user)
+{
+	struct app *a = user;
+	if (!a->apless_enabled || !a->apless) return;
+	if (ensure_inject(a) < 0) return;
+	apless_on_frame(a->apless, a->inject, d, raw, raw_len, channel);
+}
+
 /* ---- recon commands ------------------------------------------------------- */
 
 static int ensure_table(struct app *a)
@@ -639,6 +651,7 @@ static int handle_recon_start(struct app *a, int fd, int64_t id)
 
 	if (!a->capture) {
 		a->capture = capture_create(&a->iface, a->table, a->hs, a->ipc);
+		if (a->capture) capture_set_frame_cb(a->capture, on_capture_frame, a);
 		if (!a->capture)
 			return reply_error(a->ipc, fd, id, "capture init failed");
 	}
@@ -1169,6 +1182,7 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 	}
 
 	a->capture = capture_create(&a->iface, a->table, a->hs, a->ipc);
+	if (a->capture) capture_set_frame_cb(a->capture, on_capture_frame, a);
 	if (!a->capture || capture_start(a->capture) < 0) {
 		log_err("autostart: capture init/start failed");
 		return -1;
@@ -1304,8 +1318,7 @@ static int handle_set_apless(struct app *a, int fd, int64_t id, const char *args
 		return reply_error(a->ipc, fd, id, "missing 'enabled'");
 
 	if (en && !a->apless) {
-		/* inject is ensured lazily when the responder actually fires. */
-		a->apless = apless_create(a->inject, a->hs);
+		a->apless = apless_create(a->hs);
 		if (!a->apless)
 			return reply_error(a->ipc, fd, id, "apless alloc failed");
 	}

