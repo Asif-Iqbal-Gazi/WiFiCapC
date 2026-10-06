@@ -104,6 +104,7 @@ Typical bring-up order: `iface_set` → `monitor_on` → `recon_start` →
 | `set_handshake_dir` | `{path}` | Where per-pair `.pcap`/`.22000` are written. |
 | `set_mac_rand` | `{enabled: 0\|1}` | Fresh random MAC per assoc (S1). |
 | `set_pmkid_only` | `{enabled: 0\|1}` | Autonomous attack sends assoc only, no deauth (S2). |
+| `set_apless` | `{enabled: 0\|1}` | **Opt-in, OFF by default.** Toggle the ap-less / rogue-AP M2 attack (A): answer client probe-requests by impersonating the probed ESSID, inject an M1, capture the client's M2. Loud/active — separate from the passive-ish capture/PMKID/deauth path. See `docs/IDEAS/ap-less-m2-attack.md`. |
 | `set_attack` | `{enabled: 0\|1}` | Gate the `--auto` per-channel attack at runtime. Capture + hopping are unaffected; only the active assoc/deauth turns on/off (e.g. agent manual mode → off). |
 | `auto_stop` | — | Stop `--auto` self-driving (hop + attack) without dropping monitor/capture, handing channel control to the client (AU7; agent-driven mode). `stats.auto` → false. |
 | `auto_start` | — | Resume `--auto` self-driving (re-hop the startup channels; attack per `set_attack`). Errors if the daemon wasn't started with `--auto`. |

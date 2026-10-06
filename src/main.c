@@ -5,6 +5,7 @@
 #include "handshake.h"
 #include "iface.h"
 #include "inject.h"
+#include "apless.h"
 #include "ipc.h"
 #include "log.h"
 #include "proto.h"
@@ -59,6 +60,8 @@ struct app {
 	time_t             health_progress;  /* last time frames advanced / hop was off */
 	int                mac_rand;   /* --mac-rand applied to inject when created */
 	int                pmkid_only; /* S2: autonomous attack does assoc only, no deauth */
+	int                apless_enabled; /* A: ap-less/rogue-AP M2 harvest — OFF by default, loudest attack */
+	struct apless     *apless;     /* rogue-AP responder state (NULL until first enabled) */
 	int                auto_mode;  /* AU3: self-driving --auto mode (hop+attack by daemon) */
 	int                attack_enabled; /* --auto: gate the per-channel attack (set_attack) */
 	/* AU7: channels/interval captured at autostart so auto_start can resume
@@ -1289,6 +1292,28 @@ static int handle_set_pmkid_only(struct app *a, int fd, int64_t id, const char *
 	return reply_ok_empty(a->ipc, fd, id);
 }
 
+/* A: toggle the ap-less / rogue-AP M2 attack. OFF by default and opt-in — it
+ * actively impersonates networks to solicit clients, so it stays separate from
+ * the passive-ish capture/PMKID/deauth path. Lazily builds the responder. */
+static int handle_set_apless(struct app *a, int fd, int64_t id, const char *args)
+{
+	if (!args)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+	int64_t en = 0;
+	if (proto_args_get_int(args, "enabled", &en) < 0)
+		return reply_error(a->ipc, fd, id, "missing 'enabled'");
+
+	if (en && !a->apless) {
+		/* inject is ensured lazily when the responder actually fires. */
+		a->apless = apless_create(a->inject, a->hs);
+		if (!a->apless)
+			return reply_error(a->ipc, fd, id, "apless alloc failed");
+	}
+	a->apless_enabled = !!en;
+	log_info("set_apless: ap-less M2 attack %s", en ? "ENABLED (opt-in)" : "off");
+	return reply_ok_empty(a->ipc, fd, id);
+}
+
 static int handle_set_attack(struct app *a, int fd, int64_t id, const char *args)
 {
 	if (!args)
@@ -1557,6 +1582,7 @@ static int on_line(int fd, char *line, size_t len, void *user)
 	if (strcmp(req.cmd, "set_ttls")    == 0) return handle_set_ttls(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_mac_rand") == 0) return handle_set_mac_rand(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_pmkid_only") == 0) return handle_set_pmkid_only(a, fd, req.id, req.args_raw);
+	if (strcmp(req.cmd, "set_apless")     == 0) return handle_set_apless(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "set_attack")   == 0) return handle_set_attack(a, fd, req.id, req.args_raw);
 	if (strcmp(req.cmd, "auto_start")   == 0) return handle_auto_start(a, fd, req.id);
 	if (strcmp(req.cmd, "auto_stop")    == 0) return handle_auto_stop(a, fd, req.id);
@@ -1946,6 +1972,7 @@ int main(int argc, char **argv)
 	log_info("shutting down");
 	if (a.health_fd >= 0) { ipc_remove_fd(a.ipc, a.health_fd); close(a.health_fd); }
 	if (a.attack_fd >= 0) { ipc_remove_fd(a.ipc, a.attack_fd); close(a.attack_fd); }
+	if (a.apless)  apless_destroy(a.apless);
 	if (a.inject)  inject_destroy(a.inject);
 	if (a.capture) capture_destroy(a.capture);
 	if (a.hopper)  chanhop_destroy(a.hopper);

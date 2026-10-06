@@ -156,6 +156,14 @@ assert_match "$resp" '"ok":true'         "set_pmkid_only enable → ok"
 resp=$(run '{"id":61,"cmd":"set_pmkid_only"}')
 assert_match "$resp" "missing 'enabled'" "set_pmkid_only without args → error"
 
+# A — set_apless (ap-less/rogue-AP M2 attack, opt-in)
+resp=$(run '{"id":62,"cmd":"set_apless","args":{"enabled":1}}')
+assert_match "$resp" '"ok":true'         "set_apless enable → ok"
+resp=$(run '{"id":63,"cmd":"set_apless","args":{"enabled":0}}')
+assert_match "$resp" '"ok":true'         "set_apless disable → ok"
+resp=$(run '{"id":66,"cmd":"set_apless"}')
+assert_match "$resp" "missing 'enabled'" "set_apless without args → error"
+
 # set_attack (--auto attack toggle)
 resp=$(run '{"id":64,"cmd":"set_attack","args":{"enabled":0}}')
 assert_match "$resp" '"ok":true'         "set_attack disable → ok"

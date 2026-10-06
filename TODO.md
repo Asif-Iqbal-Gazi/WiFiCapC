@@ -222,13 +222,21 @@ From a source-level study of hcxdumptool 7.1.2's default attack model.
 - [x] **C-lite — attack-on-new-target.** Fire one assoc/deauth the instant a
       new AP/STA appears (`on_table_event` → `attack_new_{ap,sta}`), silent, for
       fast first-contact; the periodic path's cooldown prevents double-hits. ✅ v0.8.6
-- [ ] **A — ap-less / rogue-AP M2 client attack** (the big one). Respond to
-      client probe requests impersonating the probed ESSID → assoc/auth
-      responses → inject our own EAPOL M1 → capture the client's M2 → feed the
-      .22000 pipeline. Harvests handshakes from probing clients with no AP in
-      range. Needs a rogue-AP state machine + a config/IPC gate (like
-      `pmkid_only`). Design doc first, then its own release. See
-      `docs/IDEAS/ap-less-m2-attack.md`.
+- [~] **A — ap-less / rogue-AP M2 client attack** (the big one, in progress).
+      Respond to client probe requests impersonating the probed ESSID →
+      assoc/auth responses → inject our own EAPOL M1 → capture the client's M2
+      → feed the .22000 pipeline. OFF by default (opt-in). See
+      `docs/IDEAS/ap-less-m2-attack.md`. Built in reviewable increments:
+    - [x] Foundation: `apless` module (src/apless.c, include/apless.h) with the
+          per-client rogue-session table + TTL eviction; `set_apless` IPC gate
+          (OFF by default, lazily builds the responder); smoke-tested; documented.
+    - [ ] Increment 2: `inject_probe_response` + capture→app mgmt-frame hook;
+          directed probe-req → rogue proberesp (impersonate the ESSID).
+    - [ ] Increment 3: dot11 classify AUTH/ASSOC-REQ; auth/assoc responses +
+          inject EAPOL M1 (fresh ANONCE per session).
+    - [ ] Increment 4: capture the client's M2 — register our injected M1 with
+          the handshake collector so the pair finalises (the subtle part; ASAN
+          + a frame-level unit test, validated on the Pi).
 
 ---
 
