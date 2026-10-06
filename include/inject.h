@@ -68,4 +68,12 @@ int inject_probe_response(struct inject *i, const uint8_t bssid[6],
                           const uint8_t client[6],
                           const char *ssid, uint8_t ssid_len, int channel);
 
+/* A: rogue-AP auth/assoc responses + our EAPOL-Key M1 (ap-less M2 attack). */
+int inject_auth_response (struct inject *i, const uint8_t bssid[6],
+                          const uint8_t client[6]);
+int inject_assoc_response(struct inject *i, const uint8_t bssid[6],
+                          const uint8_t client[6]);
+int inject_eapol_m1      (struct inject *i, const uint8_t bssid[6],
+                          const uint8_t client[6], const uint8_t anonce[32]);
+
 #endif

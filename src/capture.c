@@ -119,6 +119,12 @@ static void process_frame(struct capture *c, size_t n)
 		if (c->frame_cb)
 			c->frame_cb(&d, c->rx, n, channel, c->frame_cb_user);
 		break;
+	case DOT11_FRAME_AUTH:
+	case DOT11_FRAME_ASSOC_REQ:
+		/* A: a client engaging one of our rogue BSSIDs — drive the exchange. */
+		if (c->frame_cb)
+			c->frame_cb(&d, c->rx, n, channel, c->frame_cb_user);
+		break;
 	case DOT11_FRAME_DATA:
 		if (recon_ok)
 			table_observe_sta(c->table, &d, channel, rt.rssi_dbm, now, d.bssid);

