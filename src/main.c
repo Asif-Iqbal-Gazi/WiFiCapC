@@ -32,7 +32,7 @@
  * -H/--handshakes (the pwnagotchi launcher does) or set it at runtime over IPC
  * (set_handshake_dir). Relative → created under the daemon's CWD. */
 #define DEFAULT_HS_DIR   "handshakes"
-#define WIFICAPC_VER     "0.9.0"
+#define WIFICAPC_VER     "0.9.1"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300

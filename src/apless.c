@@ -47,14 +47,21 @@ struct rogue {
 struct apless {
 	struct handshake *hs;
 	struct rogue      sessions[APLESS_MAX_SESSIONS];
+	uint8_t           oui[3];           /* random locally-administered OUI, per daemon run */
 	uint32_t          nic;              /* increments to fabricate distinct BSSIDs */
 };
+
+static void apless_rand(uint8_t *buf, size_t n);
 
 struct apless *apless_create(struct handshake *hs)
 {
 	struct apless *a = calloc(1, sizeof *a);
 	if (!a) return NULL;
 	a->hs = hs;
+	/* Randomize the rogue-AP OUI per run (like hcxdumptool), then increment the
+	 * NIC per impersonated ESSID — so we don't broadcast a fixed fake vendor. */
+	apless_rand(a->oui, 3);
+	a->oui[0] = (a->oui[0] & 0xfe) | 0x02;   /* locally-administered, unicast */
 	log_info("apless: rogue-AP M2 responder armed (opt-in attack)");
 	return a;
 }
@@ -87,7 +94,7 @@ static struct rogue *session_get(struct apless *a, const uint8_t client[6],
 	memcpy(freeslot->essid, essid, essid_len);
 	freeslot->essid[essid_len] = '\0';
 	/* fabricated BSSID: locally-administered OUI + incrementing NIC */
-	freeslot->bssid[0] = 0x02; freeslot->bssid[1] = 0x11; freeslot->bssid[2] = 0x22;
+	freeslot->bssid[0] = a->oui[0]; freeslot->bssid[1] = a->oui[1]; freeslot->bssid[2] = a->oui[2];
 	freeslot->bssid[3] = (a->nic >> 16) & 0xff;
 	freeslot->bssid[4] = (a->nic >> 8)  & 0xff;
 	freeslot->bssid[5] =  a->nic        & 0xff;
