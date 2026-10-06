@@ -26,8 +26,12 @@
 #include <unistd.h>
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
-#define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.6"
+/* Neutral default so the engine doesn't assume any particular environment
+ * (it is hardware/host-agnostic). Callers that want a specific location pass
+ * -H/--handshakes (the pwnagotchi launcher does) or set it at runtime over IPC
+ * (set_handshake_dir). Relative → created under the daemon's CWD. */
+#define DEFAULT_HS_DIR   "handshakes"
+#define WIFICAPC_VER     "0.8.7"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -1173,7 +1177,11 @@ static int autostart(struct app *a, const struct autostart_opts *o)
 	int        auto_ch[CHANHOP_MAX_CHANNELS];
 	const int *channels   = o->channels;
 	int        n_channels = o->n_channels;
-	if (n_channels == 0 && o->auto_mode) {
+	/* No explicit channel list → enumerate what the radio actually supports
+	 * (regdomain-aware, includes 5 GHz on dual-band adapters). This applies in
+	 * every mode now, not just --auto, so a plain capture run covers the real
+	 * band plan instead of a hardcoded 2.4 GHz list. */
+	if (n_channels == 0) {
 		int n = iface_supported_channels(&a->iface, auto_ch, CHANHOP_MAX_CHANNELS);
 		if (n > 0) {
 			channels   = auto_ch;
@@ -1859,13 +1867,9 @@ int main(int argc, char **argv)
 	int rc = parse_opts(argc, argv, &o);
 	if (rc != 0) return rc < 0 ? 1 : 0;
 
-	/* If --iface was given but no --channels, use the default 2.4 GHz list.
-	 * --auto detects channels itself, so don't pre-fill there. */
-	if (o.iface && o.n_channels == 0 && !o.auto_mode) {
-		for (int i = 0; i < DEFAULT_N_CHANNELS; i++)
-			o.channels[i] = DEFAULT_CHANNELS[i];
-		o.n_channels = DEFAULT_N_CHANNELS;
-	}
+	/* No --channels given → leave n_channels at 0 so autostart enumerates the
+	 * radio's real band plan (incl. 5 GHz), in every mode. autostart falls back
+	 * to DEFAULT_CHANNELS only if enumeration returns nothing. */
 
 	log_init(o.debug ? LL_DEBUG : LL_INFO, !o.foreground);
 	if (o.log_format && strcmp(o.log_format, "json") == 0)

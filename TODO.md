@@ -110,6 +110,28 @@ then Tier 2 (perf), then Tier 3 (features).
       band-aware API rather than overloading the bare channel number.
 - Files: `src/iface.c`.
 
+### E1 — 5 GHz support + host-agnostic engine defaults ✅ v0.8.7
+Surfaced by bringing up a dual-band RTL8812AU (Alfa AWUS036ACH) on an x86-64
+host as a testbed.
+- [x] **5 GHz re-added** (reverses C3 for dual-band adapters): `iface_chan_to_freq`
+      / `iface_freq_to_chan` map channels 36..177 (`5000 + ch*5`). 5 GHz numbers
+      don't overlap 2.4 (1..14) so a bare channel int stays unambiguous; 6 GHz
+      stays out (its 1..233 *do* overlap). On the Alfa: 14→39 channels, ~157→~229
+      APs. DFS channels enumerate (RX/passive OK) and tune fine. ✅ v0.8.7
+- [x] **Enumerate in every mode**: dropped the `&& auto_mode` guard and the
+      pre-autostart 13-channel pre-fill in `main()`, so a plain (non-`--auto`)
+      capture run covers the radio's real band plan, not a hardcoded 2.4 list.
+- [x] **Neutral handshake dir**: `DEFAULT_HS_DIR` was `/etc/pwnagotchi/handshakes`
+      (engine assuming pwnagotchi + mkdir-spamming on hosts without it). Now
+      `handshakes` (CWD-relative); `ensure_dir` is `mkdir -p` and caches the
+      result (`dir_ready`) so a bad dir no longer spams per write. pwnagotchi
+      passes `-H /etc/pwnagotchi/handshakes` explicitly.
+- Note: rtw88 (in-kernel) does monitor **RX** well but does **not radiate**
+      injected frames — confirmed: our TX writes succeed, no AP responds, and
+      hcxdumptool can't operate either. Injection needs the out-of-tree
+      morrownr `8812au` driver. Attacks remain validated on the Pi (brcmfmac).
+- Files: `src/iface.c`, `src/main.c`, `src/handshake.c`.
+
 ### C1 — remove the dead `proc` module ✅ v0.6.12
 - [x] `proc.c` + `proc.h` (async child-process runner for
       hcxpcapngtool/wlancap2wpasec) is **never used**: `proc_create` is

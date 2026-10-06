@@ -58,6 +58,7 @@ struct hs_pair {
 struct handshake {
 	struct table  *table;
 	char           dir[128];
+	int            dir_ready;     /* 0=unchecked, 1=exists/created, -1=failed (don't re-mkdir/spam) */
 	int            stale_timeout;
 	hs_emit_fn     emit;
 	void          *user;
@@ -99,12 +100,37 @@ static struct hs_pair *alloc_pair(struct handshake *h)
 	return slot;
 }
 
+/* mkdir -p: create `path` and any missing parent components. */
 static int ensure_dir(const char *path)
 {
-	if (mkdir(path, 0700) == 0) return 0;
-	if (errno == EEXIST)        return 0;
-	log_err("mkdir(%s): %s", path, strerror(errno));
-	return -1;
+	char tmp[128];
+	size_t n = strlen(path);
+	if (n == 0 || n >= sizeof tmp) return -1;
+	memcpy(tmp, path, n + 1);
+	while (n > 1 && tmp[n - 1] == '/') tmp[--n] = '\0';  /* strip trailing / */
+	for (char *p = tmp + 1; *p; p++) {
+		if (*p != '/') continue;
+		*p = '\0';
+		if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+			log_err("mkdir(%s): %s", tmp, strerror(errno));
+			return -1;
+		}
+		*p = '/';
+	}
+	if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+		log_err("mkdir(%s): %s", tmp, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/* Ensure h->dir exists, caching the outcome so a failing dir doesn't spam
+ * mkdir()/log on every handshake write (the old behaviour). */
+static int hs_dir_ready(struct handshake *h)
+{
+	if (h->dir_ready == 0)
+		h->dir_ready = (ensure_dir(h->dir) == 0) ? 1 : -1;
+	return h->dir_ready == 1;
 }
 
 static void mac_hex(const uint8_t m[6], char out[13])
@@ -177,7 +203,7 @@ static void write_hash22000(struct handshake *h, struct hs_pair *p)
 	if (apr && apr->ssid_len > 0)
 		hex_encode(ssid_hex, (const uint8_t *)apr->ssid, apr->ssid_len);
 
-	if (ensure_dir(h->dir) < 0) {
+	if (!hs_dir_ready(h)) {
 		p->hash22000_path[0] = '\0';
 		return;
 	}
@@ -245,7 +271,7 @@ static void payload_emit(struct handshake *h, enum hs_event evt,
 static void ensure_pcap(struct handshake *h, struct hs_pair *p)
 {
 	if (p->pcap) return;
-	if (ensure_dir(h->dir) < 0) return;
+	if (!hs_dir_ready(h)) return;
 
 	char ap_hex[13], sta_hex[13];
 	mac_hex(p->ap_bssid, ap_hex);
@@ -374,7 +400,8 @@ int handshake_set_dir(struct handshake *h, const char *dir)
 {
 	if (!dir || !*dir) return -1;
 	snprintf(h->dir, sizeof h->dir, "%s", dir);
-	return ensure_dir(h->dir);
+	h->dir_ready = 0;                 /* re-check the new dir on next write */
+	return hs_dir_ready(h) ? 0 : -1;  /* create it now + log once if it fails */
 }
 
 const char *handshake_dir(const struct handshake *h) { return h->dir; }

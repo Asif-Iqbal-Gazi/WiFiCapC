@@ -433,14 +433,19 @@ int iface_set_channel(struct iface *i, int channel)
 }
 
 /* ---------------------------------------------------------------------------
- * Channel/frequency helpers — 2.4 GHz only.
+ * Channel/frequency helpers — 2.4 + 5 GHz.
  *
- * The Raspberry Pi Zero 2 W radio (brcmfmac) is 2.4 GHz only, so we don't
- * carry 5/6 GHz channel plans. Keeping them would also mean the 6 GHz
- * channel-number range (1..233) overlaps the 2.4 GHz numbers (1..14),
- * which can't be disambiguated from a bare channel int. If a 5 GHz USB
- * adapter ever becomes a target, reintroduce this behind a band-aware
- * API rather than overloading the channel number.
+ * The Pi Zero 2 W radio (brcmfmac) is 2.4 GHz only, but dual-band USB adapters
+ * (e.g. RTL8812AU) make 5 GHz worthwhile — most modern APs live there. 5 GHz
+ * channel numbers (36..177) don't overlap 2.4 GHz (1..14), so a bare channel
+ * int stays unambiguous. 6 GHz is NOT supported: its numbers (1..233) do
+ * overlap 2.4, so it needs a band-aware API (see iface_freq_to_chan).
+ *
+ * Note on regdomain: 5 GHz DFS channels come back as "no IR" (RX/passive OK,
+ * active TX forbidden). We enumerate them (capture benefits) and let the
+ * driver reject TX there; the chanhop per-channel backoff absorbs any channel
+ * we can't tune. A future refinement can skip attacks on no-IR channels the
+ * way MFP skips deauth.
  * ------------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------------
@@ -579,15 +584,20 @@ int iface_del_vif(struct iface *base, const char *name)
 
 int iface_chan_to_freq(int ch)
 {
-	if (ch >= 1 && ch <= 13) return 2407 + ch * 5;
-	if (ch == 14)            return 2484;
+	if (ch >= 1 && ch <= 13)   return 2407 + ch * 5;   /* 2.4 GHz */
+	if (ch == 14)              return 2484;
+	if (ch >= 36 && ch <= 177) return 5000 + ch * 5;   /* 5 GHz (U-NII-1..4) */
 	return -1;
 }
 
 int iface_freq_to_chan(int f)
 {
-	if (f >= 2412 && f <= 2472) return (f - 2407) / 5;
+	if (f >= 2412 && f <= 2472) return (f - 2407) / 5;  /* 2.4 GHz 1..13 */
 	if (f == 2484)              return 14;
+	if (f >= 5180 && f <= 5885) return (f - 5000) / 5;  /* 5 GHz 36..177 */
+	/* 6 GHz deliberately omitted: its channel numbers (1..233) overlap the
+	 * 2.4 GHz numbers and can't be disambiguated from a bare channel int.
+	 * Add a band-aware API before supporting 6 GHz. */
 	return -1;
 }
 
