@@ -41,6 +41,9 @@ struct dot11_info {
 	char    ssid[DOT11_SSID_MAX + 1]; /* NUL-terminated; non-printable bytes → '?' */
 	int     has_ds_chan;
 	int     ds_chan;            /* channel from DS Parameter Set IE (mgmt frames) */
+	int     has_rsn;            /* an RSN IE was present (beacon/probe-resp) */
+	int     mfp_required;       /* RSN caps: Management Frame Protection REQUIRED (802.11w) */
+	int     mfp_capable;        /* RSN caps: MFP capable */
 };
 
 /* Parse the 802.11 frame at `frame` (length `len`, no radiotap header) and

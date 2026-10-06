@@ -143,12 +143,53 @@ static void test_radiotap_short(void)
 	ASSERT(radiotap_parse(bad_len, 8, &rt) < 0, "radiotap rejects bad it_len");
 }
 
+/* B: RSN IE parsing must surface the 802.11w MFP bits (used to skip futile
+ * deauth on protected APs). */
+static void test_dot11_rsn_mfp(void)
+{
+	static const uint8_t frame[] = {
+		0x80, 0x00,                         /* FC: mgmt beacon */
+		0x00, 0x00,                         /* duration */
+		0xff,0xff,0xff,0xff,0xff,0xff,      /* addr1 broadcast */
+		0x02,0x11,0x22,0x33,0x44,0x55,      /* addr2 BSSID */
+		0x02,0x11,0x22,0x33,0x44,0x55,      /* addr3 */
+		0x00, 0x00,                         /* seq */
+		0,0,0,0,0,0,0,0,                    /* timestamp */
+		0x64, 0x00,                         /* beacon interval */
+		0x11, 0x04,                         /* capability info */
+		0x00, 0x02, 'H', 'i',               /* IE SSID "Hi" */
+		0x03, 0x01, 0x06,                   /* IE DS channel 6 */
+		0x30, 0x14,                         /* IE RSN, len 20 */
+		0x01, 0x00,                         /* version */
+		0x00,0x0f,0xac,0x04,                /* group cipher CCMP */
+		0x01, 0x00,                         /* pairwise count 1 */
+		0x00,0x0f,0xac,0x04,                /* pairwise CCMP */
+		0x01, 0x00,                         /* AKM count 1 */
+		0x00,0x0f,0xac,0x02,                /* AKM PSK */
+		0xc0, 0x00                          /* RSN caps: MFPC|MFPR */
+	};
+	struct dot11_info d;
+	memset(&d, 0, sizeof d);
+	ASSERT(dot11_parse(frame, sizeof frame, &d) == 0, "rsn beacon parses");
+	ASSERT(d.has_rsn,           "rsn: IE detected");
+	ASSERT(d.mfp_required == 1, "rsn: MFP required detected");
+	ASSERT(d.mfp_capable == 1,  "rsn: MFP capable detected");
+
+	uint8_t frame2[sizeof frame];
+	memcpy(frame2, frame, sizeof frame);
+	frame2[sizeof frame - 2] = 0x00;        /* clear RSN caps → no MFP */
+	memset(&d, 0, sizeof d);
+	ASSERT(dot11_parse(frame2, sizeof frame2, &d) == 0, "rsn beacon2 parses");
+	ASSERT(d.has_rsn && d.mfp_required == 0, "rsn: MFP not required when caps=0");
+}
+
 int main(void)
 {
 	test_radiotap();
 	test_dot11_beacon();
 	test_dot11_data_to_ds();
 	test_radiotap_short();
+	test_dot11_rsn_mfp();
 	printf("\n%d passed, %d failed\n", n_pass, n_fail);
 	return n_fail ? 1 : 0;
 }

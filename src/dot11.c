@@ -48,8 +48,31 @@
 
 #define IE_SSID         0
 #define IE_DS_PARAM     3
+#define IE_RSN          48
 
 static void mac_copy(uint8_t out[6], const uint8_t *src) { memcpy(out, src, 6); }
+
+/* Walk the RSN IE far enough to read the RSN Capabilities field, where the
+ * MFP (802.11w) bits live:  bit 6 = MFPR (required), bit 7 = MFPC (capable).
+ * Layout: version(2) group(4) pwCount(2) pw(4*N) akmCount(2) akm(4*M) caps(2).
+ * Every step is bounds-checked; a truncated IE just leaves fields unset. */
+static void parse_rsn(struct dot11_info *out, const uint8_t *d, uint8_t len)
+{
+	size_t p;
+	if (len < 8) return;                 /* version + group + pwCount minimum */
+	out->has_rsn = 1;
+	p = 2 + 4;                           /* skip version + group cipher */
+	if (p + 2 > len) return;
+	uint16_t pw = (uint16_t)(d[p] | (d[p + 1] << 8));
+	p += 2 + (size_t)pw * 4;             /* skip pairwise suites */
+	if (p + 2 > len) return;
+	uint16_t akm = (uint16_t)(d[p] | (d[p + 1] << 8));
+	p += 2 + (size_t)akm * 4;            /* skip AKM suites */
+	if (p + 2 > len) return;             /* RSN capabilities are optional */
+	uint16_t caps = (uint16_t)(d[p] | (d[p + 1] << 8));
+	out->mfp_capable  = (caps & 0x0080) ? 1 : 0;
+	out->mfp_required = (caps & 0x0040) ? 1 : 0;
+}
 
 static int copy_ssid(struct dot11_info *out, const uint8_t *src, uint8_t len)
 {
@@ -81,6 +104,9 @@ static void parse_ies(struct dot11_info *out, const uint8_t *p, size_t len)
 				out->has_ds_chan = 1;
 				out->ds_chan     = (int)data[0];
 			}
+			break;
+		case IE_RSN:
+			parse_rsn(out, data, l);
 			break;
 		default: break;
 		}

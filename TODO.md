@@ -188,6 +188,26 @@ then Tier 2 (perf), then Tier 3 (features).
       in ap_record/sta_record, cleared on eviction.
 - Files: `src/main.c::on_attack_timer`, `src/table.c`, `include/table.h`.
 
+### P6 — hcxdumptool-parity attack improvements
+From a source-level study of hcxdumptool 7.1.2's default attack model.
+- [x] **B — MFP-aware deauth.** Parse RSN capabilities (MFP bits) from beacons
+      (`dot11.c::parse_rsn` → `dot11_info.mfp_required`, stored in ap_record);
+      skip deauth on 802.11w-required APs (they ignore it) — still PMKID them
+      via assoc. `table_ap_mfp_required`. ✅ v0.8.6
+- [x] **D — attempt-budget replenish.** A gave-up target (`attack_count` cap)
+      re-arms after `TABLE_ATTACK_REPLENISH_SEC`=1h idle (hcxdumptool parity),
+      in `table_note_{ap,sta}_attacked` + the give-up check. ✅ v0.8.6
+- [x] **C-lite — attack-on-new-target.** Fire one assoc/deauth the instant a
+      new AP/STA appears (`on_table_event` → `attack_new_{ap,sta}`), silent, for
+      fast first-contact; the periodic path's cooldown prevents double-hits. ✅ v0.8.6
+- [ ] **A — ap-less / rogue-AP M2 client attack** (the big one). Respond to
+      client probe requests impersonating the probed ESSID → assoc/auth
+      responses → inject our own EAPOL M1 → capture the client's M2 → feed the
+      .22000 pipeline. Harvests handshakes from probing clients with no AP in
+      range. Needs a rogue-AP state machine + a config/IPC gate (like
+      `pmkid_only`). Design doc first, then its own release. See
+      `docs/IDEAS/ap-less-m2-attack.md`.
+
 ---
 
 # Tier 3 — features / larger

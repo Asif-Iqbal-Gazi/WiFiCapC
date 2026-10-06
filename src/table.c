@@ -119,6 +119,9 @@ void table_observe_ap(struct table *t, const struct dot11_info *d,
 	int ch = d->has_ds_chan ? d->ds_chan : channel;
 	if (ch > 0) ap->channel = ch;
 	if (rssi != 127) ap->rssi = rssi;
+	/* MFP only comes from frames carrying an RSN IE (beacon/probe-resp);
+	 * don't let a plain data frame clear what a beacon told us. */
+	if (d->has_rsn) ap->mfp_required = d->mfp_required;
 	ap->last_seen = now;
 	ap->frames++;
 
@@ -301,10 +304,20 @@ int table_ap_is_captured(const struct table *t, const uint8_t bssid[6])
 	return ap ? ap->captured : 0;
 }
 
+int table_ap_mfp_required(const struct table *t, const uint8_t bssid[6])
+{
+	struct ap_record *ap = find_ap((struct table *)t, bssid);
+	return ap ? ap->mfp_required : 0;
+}
+
 void table_note_ap_attacked(struct table *t, const uint8_t bssid[6], time_t now)
 {
 	struct ap_record *ap = find_ap(t, bssid);
 	if (!ap) return;
+	/* D: a target we gave up on gets a fresh budget after a long idle gap
+	 * (it may have gained clients / moved). Mirrors hcxdumptool's 1h replenish. */
+	if (ap->last_attack && (now - ap->last_attack) > TABLE_ATTACK_REPLENISH_SEC)
+		ap->attack_count = 0;
 	ap->last_attack = now;
 	if (ap->attack_count < 0xffff) ap->attack_count++;
 }
@@ -313,6 +326,8 @@ void table_note_sta_attacked(struct table *t, const uint8_t mac[6], time_t now)
 {
 	struct sta_record *sta = find_sta(t, mac);
 	if (!sta) return;
+	if (sta->last_attack && (now - sta->last_attack) > TABLE_ATTACK_REPLENISH_SEC)
+		sta->attack_count = 0;
 	sta->last_attack = now;
 	if (sta->attack_count < 0xffff) sta->attack_count++;
 }
