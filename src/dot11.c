@@ -134,10 +134,13 @@ int dot11_parse(const uint8_t *frame, size_t len, struct dot11_info *out)
 
 	if (type == DOT11_TYPE_MGMT) {
 		switch (subtype) {
-		case DOT11_SUBTYPE_BEACON:     out->kind = DOT11_FRAME_BEACON;     break;
-		case DOT11_SUBTYPE_PROBE_RESP: out->kind = DOT11_FRAME_PROBE_RESP; break;
-		case DOT11_SUBTYPE_PROBE_REQ:  out->kind = DOT11_FRAME_PROBE_REQ;  break;
-		default:                       out->kind = DOT11_FRAME_OTHER;      break;
+		case DOT11_SUBTYPE_BEACON:      out->kind = DOT11_FRAME_BEACON;     break;
+		case DOT11_SUBTYPE_PROBE_RESP:  out->kind = DOT11_FRAME_PROBE_RESP; break;
+		case DOT11_SUBTYPE_PROBE_REQ:   out->kind = DOT11_FRAME_PROBE_REQ;  break;
+		case DOT11_SUBTYPE_AUTH:        out->kind = DOT11_FRAME_AUTH;       break;
+		case DOT11_SUBTYPE_ASSOC_REQ:   /* fall through — treat re/assoc alike */
+		case DOT11_SUBTYPE_REASSOC_REQ: out->kind = DOT11_FRAME_ASSOC_REQ;  break;
+		default:                        out->kind = DOT11_FRAME_OTHER;      break;
 		}
 		mac_copy(out->da,    addr1);
 		mac_copy(out->sa,    addr2);

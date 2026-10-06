@@ -183,6 +183,43 @@ static void test_dot11_rsn_mfp(void)
 	ASSERT(d.has_rsn && d.mfp_required == 0, "rsn: MFP not required when caps=0");
 }
 
+/* A: dot11 must classify AUTH + (RE)ASSOC-REQ (client -> our rogue AP), with
+ * sa=client and bssid=AP. */
+static void test_dot11_auth_assoc(void)
+{
+	uint8_t auth[] = {
+		0xb0, 0x00,                          /* FC: mgmt, auth(11) */
+		0x00, 0x00,
+		0x02,0xbb,0xbb,0xbb,0xbb,0xbb,       /* addr1 = DA = AP */
+		0x02,0xaa,0xaa,0xaa,0xaa,0xaa,       /* addr2 = SA = client */
+		0x02,0xbb,0xbb,0xbb,0xbb,0xbb,       /* addr3 = BSSID = AP */
+		0x00,0x00,                           /* seq */
+		0x00,0x00, 0x01,0x00, 0x00,0x00      /* auth: algo, seq, status */
+	};
+	struct dot11_info d; memset(&d, 0, sizeof d);
+	ASSERT(dot11_parse(auth, sizeof auth, &d) == 0,   "auth parses");
+	ASSERT(d.kind == DOT11_FRAME_AUTH,                "auth classified");
+	ASSERT(d.sa[1] == 0xaa && d.bssid[1] == 0xbb,     "auth sa=client bssid=AP");
+
+	uint8_t assoc[] = {
+		0x00, 0x00,                          /* FC: mgmt, assoc-req(0) */
+		0x00, 0x00,
+		0x02,0xbb,0xbb,0xbb,0xbb,0xbb,
+		0x02,0xaa,0xaa,0xaa,0xaa,0xaa,
+		0x02,0xbb,0xbb,0xbb,0xbb,0xbb,
+		0x00,0x00,
+		0x31,0x04, 0x0a,0x00
+	};
+	memset(&d, 0, sizeof d);
+	ASSERT(dot11_parse(assoc, sizeof assoc, &d) == 0, "assoc-req parses");
+	ASSERT(d.kind == DOT11_FRAME_ASSOC_REQ,           "assoc-req classified");
+
+	assoc[0] = 0x20;                          /* subtype 2 = reassoc-req */
+	memset(&d, 0, sizeof d);
+	ASSERT(dot11_parse(assoc, sizeof assoc, &d) == 0, "reassoc-req parses");
+	ASSERT(d.kind == DOT11_FRAME_ASSOC_REQ,           "reassoc-req -> ASSOC_REQ");
+}
+
 int main(void)
 {
 	test_radiotap();
@@ -190,6 +227,7 @@ int main(void)
 	test_dot11_data_to_ds();
 	test_radiotap_short();
 	test_dot11_rsn_mfp();
+	test_dot11_auth_assoc();
 	printf("\n%d passed, %d failed\n", n_pass, n_fail);
 	return n_fail ? 1 : 0;
 }

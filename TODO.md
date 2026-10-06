@@ -234,8 +234,9 @@ From a source-level study of hcxdumptool 7.1.2's default attack model.
           a `capture_set_frame_cb` hook; a directed probe-req now creates a
           rogue session (fabricated BSSID) and answers it, impersonating the
           probed ESSID. Per-session cooldown; wildcard probes skipped (phase 2).
-    - [ ] Increment 3: dot11 classify AUTH/ASSOC-REQ; auth/assoc responses +
-          inject EAPOL M1 (fresh ANONCE per session).
+    - [~] Increment 3: dot11 classify AUTH/ASSOC-REQ ✅ (unit-tested); still
+          TODO — inject auth/assoc responses + EAPOL M1 (fresh ANONCE) + the
+          apless state machine (PROBED→auth→assoc→M1_SENT). Validate on the Pi.
     - [ ] Increment 4: capture the client's M2 — register our injected M1 with
           the handshake collector so the pair finalises (the subtle part; ASAN
           + a frame-level unit test, validated on the Pi).

@@ -15,15 +15,20 @@
 #define DOT11_TYPE_CTRL  1
 #define DOT11_TYPE_DATA  2
 
-#define DOT11_SUBTYPE_PROBE_REQ  4
-#define DOT11_SUBTYPE_PROBE_RESP 5
-#define DOT11_SUBTYPE_BEACON     8
+#define DOT11_SUBTYPE_ASSOC_REQ   0
+#define DOT11_SUBTYPE_REASSOC_REQ 2
+#define DOT11_SUBTYPE_PROBE_REQ   4
+#define DOT11_SUBTYPE_PROBE_RESP  5
+#define DOT11_SUBTYPE_BEACON      8
+#define DOT11_SUBTYPE_AUTH       11
 
 enum dot11_frame_kind {
 	DOT11_FRAME_OTHER = 0,
 	DOT11_FRAME_BEACON,         /* mgmt 8: from AP */
 	DOT11_FRAME_PROBE_RESP,     /* mgmt 5: from AP */
 	DOT11_FRAME_PROBE_REQ,      /* mgmt 4: from STA */
+	DOT11_FRAME_AUTH,           /* mgmt 11: authentication (A: from a client to our rogue AP) */
+	DOT11_FRAME_ASSOC_REQ,      /* mgmt 0/2: (re)association request (A: from a client) */
 	DOT11_FRAME_DATA,           /* any data subtype */
 };
 
